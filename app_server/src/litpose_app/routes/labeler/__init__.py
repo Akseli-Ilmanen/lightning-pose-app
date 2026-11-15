@@ -31,6 +31,7 @@ from fastapi import APIRouter
 from . import bundle_adjust as _bundle_adjust
 from . import count_labeled_frames as _count_labeled_frames
 from . import find_label_files as _find_label_files
+from . import label_audit as _label_audit
 from . import multiview_autolabel as _multiview_autolabel
 from . import save_mvframe as _save_mvframe
 
@@ -45,3 +46,4 @@ router.include_router(_multiview_autolabel.router)
 router.include_router(_find_label_files.router)
 router.include_router(_bundle_adjust.router)
 router.include_router(_count_labeled_frames.router)
+router.include_router(_label_audit.router)

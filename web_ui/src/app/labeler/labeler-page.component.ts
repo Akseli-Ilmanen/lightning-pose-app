@@ -10,6 +10,7 @@ import {
   Component,
   computed,
   DestroyRef,
+  effect,
   ElementRef,
   inject,
   Injector,
@@ -41,6 +42,8 @@ import {
   AlertFooterComponent,
   AlertHeaderComponent,
 } from '../components/alert-dialog/alert-dialog.component';
+import { LabelAuditService } from './label-audit/label-audit.service';
+import { LabelAuditPanelComponent } from './label-audit/label-audit-panel.component';
 
 interface LoadError {
   message: string;
@@ -65,12 +68,34 @@ interface LoadError {
     AlertDialogComponent,
     AlertHeaderComponent,
     AlertFooterComponent,
+    LabelAuditPanelComponent,
   ],
+  providers: [LabelAuditService],
   templateUrl: './labeler-page.component.html',
   styleUrl: './labeler-page.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LabelerPageComponent implements OnInit, OnChanges {
+  protected audit = inject(LabelAuditService);
+  protected isMultiviewProject = computed(
+    () =>
+      (this.projectInfoService.projectContext()?.projectInfo?.views?.length ??
+        0) > 1,
+  );
+
+  constructor() {
+    // Reviewing a finding opens its frame.
+    effect(() => {
+      const focus = this.audit.focus();
+      if (!focus || focus.finding.frameKey === this.frameKey()) return;
+      void this.router.navigate([], {
+        queryParams: {
+          labelFileKey: this.labelFileKey(),
+          frameKey: focus.finding.frameKey,
+        },
+      });
+    });
+  }
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private zone = inject(NgZone);
   private destroyRef = inject(DestroyRef);
@@ -192,6 +217,7 @@ export class LabelerPageComponent implements OnInit, OnChanges {
 
   ngOnChanges(changes: SimpleChanges) {
     if (changes['labelFileKey']) {
+      this.audit.stopReview();
       this.loadLabelFileData(this.selectedLabelFile()).catch((error) => {
         throw error;
       });

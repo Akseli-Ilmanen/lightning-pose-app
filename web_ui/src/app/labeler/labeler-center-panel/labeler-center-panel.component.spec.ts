@@ -10,6 +10,7 @@ import { MVFrame } from '../frame.model';
 import { ContextSlotView } from '../temporal-context';
 import { LabelerViewOptionsService } from '../labeler-view-options.service';
 import { SessionService } from '../../session.service';
+import { AuditFocus } from '../label-audit/label-audit.model';
 
 describe('LabelerCenterPanelComponent temporal context', () => {
   let fixture: ComponentFixture<LabelerCenterPanelComponent>;
@@ -809,6 +810,164 @@ describe('LabelerCenterPanelComponent Next and keypoint selection', () => {
   });
 });
 
+describe('LabelerCenterPanelComponent label audit review', () => {
+  let fixture: ComponentFixture<LabelerCenterPanelComponent>;
+  const VIEWS = ['top', 'side'];
+  const NAMES = ['nose', 'leftEar', 'rightEar'];
+
+  const frame: MVFrame = {
+    key: 'labeled-data/s_*/img01.png',
+    views: VIEWS.map((viewName) => {
+      const keypoints = NAMES.map((keypointName, i) => ({ keypointName, x: i, y: i }));
+      return {
+        viewName,
+        imgPath: `labeled-data/s_${viewName}/img01.png`,
+        keypoints,
+        originalKeypoints: keypoints,
+      };
+    }),
+  };
+
+  function focus(index = 1, partner: string | null = null): AuditFocus {
+    return {
+      index,
+      total: 3,
+      finding: {
+        kind: partner ? 'swap' : 'multiview',
+        view: 'side',
+        keypoint: 'leftEar',
+        partner,
+        imgPaths: { top: frame.views[0].imgPath, side: frame.views[1].imgPath },
+        errorPx: 20,
+        tolerancePx: 5,
+        score: 4,
+        reason: 'leftEar in side is 20px from where top put it',
+        frameKey: frame.key,
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    const projectInfo = jasmine.createSpyObj(
+      'ProjectInfoService',
+      ['projectContext'],
+      { projectInfo: { data_dir: 'data', views: VIEWS } },
+    );
+    projectInfo.projectContext.and.returnValue(null);
+    const calibration = jasmine.createSpyObj('CameraCalibrationService', [
+      'getCalibrationStatus',
+    ]);
+    calibration.getCalibrationStatus.and.resolveTo('none');
+
+    await TestBed.configureTestingModule({
+      imports: [LabelerCenterPanelComponent],
+      providers: [
+        { provide: ProjectInfoService, useValue: projectInfo },
+        { provide: CameraCalibrationService, useValue: calibration },
+        { provide: SessionService, useValue: jasmine.createSpyObj('SessionService', ['saveMVFrame']) },
+      ],
+    })
+      .overrideComponent(LabelerCenterPanelComponent, {
+        remove: { imports: [ImageLabelWidgetComponent] },
+        add: { imports: [ImageLabelWidgetStubComponent] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(LabelerCenterPanelComponent);
+    fixture.componentRef.setInput('numLabeledFramesGetter', () => 0);
+    fixture.componentRef.setInput('labelFile', {
+      key: 'CollectedData',
+      views: VIEWS.map((v) => ({ viewName: v, csvPath: `CollectedData_${v}.csv` })),
+    });
+    fixture.componentRef.setInput('frame', frame);
+  });
+
+  function reviewBar(): HTMLElement | null {
+    return fixture.nativeElement.querySelector('[data-testid="audit-review-bar"]');
+  }
+
+  function mainWidget(): ImageLabelWidgetStubComponent {
+    return fixture.debugElement.queryAll(By.directive(ImageLabelWidgetStubComponent))[0]
+      .componentInstance;
+  }
+
+  it('shows no review bar outside a review', () => {
+    fixture.detectChanges();
+    expect(reviewBar()).toBeNull();
+  });
+
+  it('opens the flagged view with the flagged keypoint selected and says why', () => {
+    fixture.componentRef.setInput('auditFocus', focus());
+    fixture.detectChanges();
+
+    expect(reviewBar()!.textContent).toContain('Likely mistake 2 / 3');
+    expect(reviewBar()!.textContent).toContain('20px from where top put it');
+    expect((mainWidget().fv() as { viewName: string }).viewName).toBe('side');
+    expect(mainWidget().selectedKeypoint()).toBe('leftEar');
+  });
+
+  it('draws only the flagged keypoints in the main image', () => {
+    fixture.componentRef.setInput('auditFocus', focus(1, 'rightEar'));
+    fixture.componentRef.setInput('visibleKeypoints', ['leftEar', 'rightEar']);
+    fixture.detectChanges();
+
+    expect(mainWidget().visibleKeypoints()).toEqual(['leftEar', 'rightEar']);
+  });
+
+  it('steps with the buttons and with n / p, and Esc stops', () => {
+    const next = jasmine.createSpy('next');
+    const previous = jasmine.createSpy('previous');
+    const exit = jasmine.createSpy('exit');
+    fixture.componentInstance.auditNext.subscribe(next);
+    fixture.componentInstance.auditPrevious.subscribe(previous);
+    fixture.componentInstance.auditExit.subscribe(exit);
+    fixture.componentRef.setInput('auditFocus', focus());
+    fixture.detectChanges();
+
+    (fixture.nativeElement.querySelector('button[aria-label="Next likely mistake"]') as HTMLButtonElement).click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p' }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(next).toHaveBeenCalledTimes(2);
+    expect(previous).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores n and p when no review is open', () => {
+    const next = jasmine.createSpy('next');
+    fixture.componentInstance.auditNext.subscribe(next);
+    fixture.detectChanges();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('Stop review removes the review bar, the lines and the keypoint filter', () => {
+    fixture.componentRef.setInput('auditFocus', focus());
+    fixture.componentRef.setInput('visibleKeypoints', ['leftEar']);
+    fixture.detectChanges();
+    expect(reviewBar()).not.toBeNull();
+
+    // The page answers Stop review by clearing the focus and the filter.
+    fixture.componentRef.setInput('auditFocus', null);
+    fixture.componentRef.setInput('visibleKeypoints', null);
+    fixture.detectChanges();
+
+    expect(reviewBar()).toBeNull();
+    expect(mainWidget().epipolarGuides()).toBeNull();
+    expect(mainWidget().visibleKeypoints()).toBeNull();
+  });
+
+  it('disables Previous on the first finding', () => {
+    fixture.componentRef.setInput('auditFocus', focus(0));
+    fixture.detectChanges();
+    const prev = fixture.nativeElement.querySelector(
+      'button[aria-label="Previous likely mistake"]',
+    ) as HTMLButtonElement;
+    expect(prev.disabled).toBeTrue();
+  });
+});
+
 @Component({ selector: 'app-image-label-widget', template: '' })
 class ImageLabelWidgetStubComponent {
   fv = input();
@@ -817,8 +976,12 @@ class ImageLabelWidgetStubComponent {
   selectedKeypoint = model<string | null>(null);
   disableInteractions = input();
   zoomableInteractivityDisabled = input();
+  visibleKeypoints = input<string[] | null>(null);
+  epipolarGuides = input<unknown>(null);
+  guideViews = input<string[]>([]);
   keypointUpdated = output<unknown>();
   zoomableContent = () => null;
+  imageSize = signal<{ w: number; h: number } | null>(null);
   contextFramesMissing = signal(false);
   currentFrameMissing = signal(false);
   currentFrameMessage = signal<string | null>(null);

@@ -48,6 +48,12 @@ import {
   DropdownTriggerComponent,
   DropdownTriggerDirective,
 } from '../../components/dropdown/dropdown.component';
+import { RpcService } from '../../rpc.service';
+import {
+  AuditFocus,
+  EpipolarGuides,
+} from '../label-audit/label-audit.model';
+import { guideColor } from '../label-audit/guide-colors';
 
 @Component({
   selector: 'app-labeler-center-panel',
@@ -71,6 +77,9 @@ import {
   templateUrl: './labeler-center-panel.component.html',
   styleUrl: './labeler-center-panel.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: {
+    '(document:keydown)': 'onDocumentKeydown($event)',
+  },
 })
 export class LabelerCenterPanelComponent implements OnChanges {
   private projectInfoService = inject(ProjectInfoService);
@@ -101,6 +110,119 @@ export class LabelerCenterPanelComponent implements OnChanges {
   /** Passed to the image widgets; bumped by the Labeler's Refresh. */
   imageReload = input(0);
 
+  /** The label audit finding being reviewed, or null when not reviewing (#207). */
+  auditFocus = input<AuditFocus | null>(null);
+  /** Keypoints to draw, or null for all (review shows only the flagged one). */
+  visibleKeypoints = input<string[] | null>(null);
+  auditOnlyFlagged = input(true);
+  auditOnlyFlaggedChange = output<boolean>();
+  auditNext = output<void>();
+  auditPrevious = output<void>();
+  auditExit = output<void>();
+
+  /** Keypoints drawn in the main image: the review's ones plus the selected one. */
+  protected shownKeypoints = computed((): string[] | null => {
+    const only = this.visibleKeypoints();
+    const selected = this.selectedKeypoint();
+    if (!only) return null;
+    return selected && !only.includes(selected) ? [...only, selected] : only;
+  });
+
+  /**
+   * Epipolar lines of the selected keypoint's labels in the other views. Part of
+   * the label audit review: shown only while reviewing, gone when it stops.
+   */
+  private allEpipolarGuides = signal<EpipolarGuides | null>(null);
+  /** The guides with only the best `maxEpipolarLines` lines (the backend ranks them). */
+  protected epipolarGuides = computed((): EpipolarGuides | null => {
+    const guides = this.allEpipolarGuides();
+    if (!guides || !this.auditFocus()) return null;
+    const max = this.viewOptions.maxEpipolarLines();
+    return { ...guides, lines: guides.lines.filter((l) => l.rank < max) };
+  });
+  /** Other views with a line in this image, for "3 of 5". */
+  protected epipolarLineCount = computed(
+    () => this.allEpipolarGuides()?.lines.filter((l) => l.segments.length).length ?? 0,
+  );
+  private epipolarRequest = 0;
+  private rpc = inject(RpcService);
+  protected readonly guideColor = guideColor;
+
+  protected guideViews = computed(() => {
+    const frame = this.frame();
+    return frame ? frame.views.map((v) => v.viewName) : [];
+  });
+
+  /** Lines in the legend: views with a line, in frame view order. */
+  protected guideLegend = computed(() => {
+    const guides = this.epipolarGuides();
+    if (!guides) return [];
+    const views = this.guideViews();
+    return guides.lines
+      .filter((l) => l.segments.length)
+      .map((l) => ({ view: l.fromView, color: guideColor(views.indexOf(l.fromView)) }));
+  });
+
+  protected onDocumentKeydown(event: KeyboardEvent) {
+    if (!this.auditFocus()) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+    if (event.key === 'n') {
+      event.preventDefault();
+      this.auditNext.emit();
+    } else if (event.key === 'p') {
+      event.preventDefault();
+      this.auditPrevious.emit();
+    } else if (event.key === 'Escape') {
+      this.auditExit.emit();
+    }
+  }
+
+  /** Labels of `keypoint` in every view of the frame (placed ones only). */
+  private labelsOf(frame: MVFrame, keypoint: string) {
+    return frame.views
+      .map((v) => {
+        const kp = v.keypoints.find((k) => k.keypointName === keypoint);
+        return kp && !lkp(kp).isNaN() ? { view: v.viewName, x: kp.x, y: kp.y } : null;
+      })
+      .filter((x): x is { view: string; x: number; y: number } => x !== null);
+  }
+
+  private async fetchEpipolarGuides(
+    frame: MVFrame,
+    view: string,
+    keypoint: string,
+    size: { w: number; h: number } | null,
+  ) {
+    const request = ++this.epipolarRequest;
+    const sessionKey = mvf(frame).autolabelSessionKey;
+    const projectKey = this.projectInfoService.projectContext()?.key;
+    const all = this.labelsOf(frame, keypoint);
+    const labels = all.filter((l) => l.view !== view);
+    const own = all.find((l) => l.view === view);
+    if (!sessionKey || !projectKey || !labels.length) {
+      this.allEpipolarGuides.set(null);
+      return;
+    }
+    try {
+      const guides = (await this.rpc.call('getEpipolarGuides', {
+        projectKey,
+        sessionKey,
+        targetView: view,
+        labels,
+        imageWidth: size?.w ?? null,
+        imageHeight: size?.h ?? null,
+        targetPoint: own ? { x: own.x, y: own.y } : null,
+      })) as EpipolarGuides;
+      if (request === this.epipolarRequest) this.allEpipolarGuides.set(guides);
+    } catch (e) {
+      // Guides are a help, not essential: drop them and log.
+      console.error('Epipolar guides failed', e);
+      if (request === this.epipolarRequest) this.allEpipolarGuides.set(null);
+    }
+  }
+
   primaryZoomableElement =
     viewChild<ImageLabelWidgetComponent>('primaryZoomable');
 
@@ -117,6 +239,38 @@ export class LabelerCenterPanelComponent implements OnChanges {
   closeFrame = output<void>();
 
   constructor() {
+    // Reviewing a finding: show its view with its keypoint selected, once its frame is open.
+    effect(() => {
+      const focus = this.auditFocus();
+      const frame = this.frame();
+      if (!focus || !frame || frame.key !== focus.finding.frameKey) return;
+      untracked(() => {
+        this._selectedView.set(focus.finding.view);
+        this.selectedKeypoint.set(focus.finding.keypoint);
+      });
+    });
+
+    // Epipolar guides follow the selected keypoint, view and its labels.
+    effect(() => {
+      this.cacheBuster(); // a keypoint moved
+      const frame = this.frame();
+      const view = this.selectedView();
+      const keypoint = this.selectedKeypoint();
+      const show =
+        !!this.auditFocus() &&
+        this.viewOptions.showEpipolarLines() &&
+        this.hasCameraCalibrationFiles();
+      const size = this.primaryZoomableElement()?.imageSize() ?? null;
+      untracked(() => {
+        if (!show || !frame || !keypoint) {
+          this.epipolarRequest++;
+          this.allEpipolarGuides.set(null);
+          return;
+        }
+        void this.fetchEpipolarGuides(frame, view, keypoint, size);
+      });
+    });
+
     // The controls are disabled without context, so stop playback and show
     // the current frame (with keypoints) rather than leave it running.
     effect(() => {

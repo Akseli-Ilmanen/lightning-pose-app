@@ -103,6 +103,14 @@
               </ul>
             </div>
           </div>
+          @if (isMultiviewProject() && loadedLabelFile()) {
+            <div class="px-4" data-testid="label-audit">
+              <app-label-audit-panel
+                [labelFile]="loadedLabelFile()"
+                [frames]="labelFileDataLabeledSlice()"
+              />
+            </div>
+          }
           <div class="p-4">
             <!-- unlabeled frames panel -->
             <div class="bg-base-300">
@@ -175,6 +183,13 @@
         [hasPreviousFrame]="hasPreviousFrame()"
         [numLabeledFramesGetter]="getNumLabeledFramesGetter"
         [imageReload]="imageReload()"
+        [auditFocus]="audit.focus()"
+        [visibleKeypoints]="audit.visibleKeypoints()"
+        [auditOnlyFlagged]="audit.onlyFlaggedKeypoints()"
+        (auditOnlyFlaggedChange)="audit.onlyFlaggedKeypoints.set($event)"
+        (auditNext)="audit.next()"
+        (auditPrevious)="audit.previous()"
+        (auditExit)="audit.stopReview()"
         (saved)="handleSaved($event)"
         (savingChange)="isSaving.set($event)"
         (nextFrame)="handleNextFrame()"

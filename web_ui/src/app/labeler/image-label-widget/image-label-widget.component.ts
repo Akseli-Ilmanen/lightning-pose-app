@@ -35,6 +35,8 @@ import {
   contextFrameOffsets,
   contextImgPaths,
 } from '../temporal-context';
+import { EpipolarGuides, GuidePoint } from '../label-audit/label-audit.model';
+import { guideColor } from '../label-audit/guide-colors';
 
 @Component({
   selector: 'app-image-label-widget',
@@ -61,6 +63,31 @@ export class ImageLabelWidgetComponent {
   selectedKeypoint = model<string | null>(null);
   disableInteractions = input<boolean>(false);
   zoomableInteractivityDisabled = input<boolean>(false);
+  /** Keypoints to draw; null draws all. The label audit review shows only the flagged one. */
+  visibleKeypoints = input<string[] | null>(null);
+  /** Epipolar lines and the other views' point, drawn in image pixels. */
+  epipolarGuides = input<EpipolarGuides | null>(null);
+  /** View names of the frame, so each source view keeps its line color. */
+  guideViews = input<string[]>([]);
+
+  protected guideLines = computed(() => {
+    const guides = this.epipolarGuides();
+    if (!guides) return [];
+    const views = this.guideViews();
+    return guides.lines.map((line) => ({
+      view: line.fromView,
+      color: guideColor(views.indexOf(line.fromView)),
+      paths: line.segments.map((s) => s.map((p) => `${p.x},${p.y}`).join(' ')),
+      // Name the line near where it enters the image.
+      labelAt: firstInside(line.segments, this.imageSize()),
+    }));
+  });
+
+  /** Natural pixel size of the shown image, once it has loaded. */
+  imageSize = computed(() => {
+    const loaded = this.loadedSize();
+    return loaded ? { w: loaded.w, h: loaded.h } : null;
+  });
 
   keypointUpdated = output<{
     kp: string;
@@ -160,8 +187,19 @@ export class ImageLabelWidgetComponent {
         );
       this.keypointViewModelCache.set(keypoints, target);
     }
-    return this.keypointViewModelCache.get(keypoints)!;
+    const all = this.keypointViewModelCache.get(keypoints)!;
+    const only = this.visibleKeypoints();
+    if (!only) return all;
+    // Same array for the same filter, so the keypoint container does not redraw needlessly.
+    const key = only.join('\u0000');
+    const cached = this.filteredViewModelCache.get(all);
+    if (cached?.key === key) return cached.models;
+    const models = all.filter((k) => only.includes(k.id));
+    this.filteredViewModelCache.set(all, { key, models });
+    return models;
   }
+
+  private filteredViewModelCache = new WeakMap<Keypoint[], { key: string; models: Keypoint[] }>();
 
   private buildViewModel(lkeypoint: LKeypoint): Keypoint {
     const val = {
@@ -280,4 +318,21 @@ export class ImageLabelWidgetComponent {
   protected handleKeypointUpdated(keypointName: string, position: Point) {
     this.keypointUpdated.emit({ kp: keypointName, position });
   }
+}
+
+/** First polyline point inside the image (inset a little), for the line's name. */
+function firstInside(
+  segments: GuidePoint[][],
+  size: { w: number; h: number } | null,
+): GuidePoint | null {
+  const inset = 12;
+  for (const seg of segments) {
+    for (const p of seg) {
+      if (!size) return p;
+      if (p.x >= inset && p.y >= inset && p.x <= size.w - inset && p.y <= size.h - inset) {
+        return p;
+      }
+    }
+  }
+  return null;
 }

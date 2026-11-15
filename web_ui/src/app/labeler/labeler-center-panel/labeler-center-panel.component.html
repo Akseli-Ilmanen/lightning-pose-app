@@ -18,6 +18,88 @@
     } @else {
       @let fv = selectedFrameView()!;
       <div class="min-h-0 min-w-0 overflow-auto">
+        @if (auditFocus(); as focus) {
+          @let finding = focus.finding;
+          <div
+            role="status"
+            data-testid="audit-review-bar"
+            class="alert alert-soft py-2 px-3 mb-2 flex flex-wrap items-center gap-2 text-sm"
+            [class.alert-warning]="finding.kind === 'swap'"
+            [class.alert-info]="finding.kind === 'multiview'"
+            [style.max-width.px]="viewOptions.imageSizePx()"
+          >
+            <span class="font-semibold">
+              Likely mistake {{ focus.index + 1 }} / {{ focus.total }}
+            </span>
+            <span class="grow min-w-0">{{ finding.reason }}</span>
+            <label class="flex items-center gap-1 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                class="toggle toggle-xs"
+                aria-label="Show only the flagged keypoint"
+                [checked]="auditOnlyFlagged()"
+                (change)="auditOnlyFlaggedChange.emit($any($event.target).checked)"
+              />
+              Only flagged
+            </label>
+            @if (hasCameraCalibrationFiles()) {
+              <span class="flex items-center gap-1 text-xs">
+                <label class="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    class="toggle toggle-xs"
+                    aria-label="Show epipolar lines"
+                    [checked]="viewOptions.showEpipolarLines()"
+                    (change)="viewOptions.showEpipolarLines.set($any($event.target).checked)"
+                  />
+                  Lines
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  class="input input-xs w-12"
+                  aria-label="Number of epipolar lines"
+                  data-tip="Most useful first: lines that cross steeply"
+                  [disabled]="!viewOptions.showEpipolarLines()"
+                  [value]="viewOptions.maxEpipolarLines()"
+                  (change)="viewOptions.setMaxEpipolarLines(+$any($event.target).value)"
+                />
+              </span>
+            }
+            <span class="flex gap-1">
+              <button
+                type="button"
+                class="btn btn-xs btn-soft tooltip tooltip-bottom"
+                data-tip="Previous likely mistake (p)"
+                aria-label="Previous likely mistake"
+                [disabled]="focus.index === 0"
+                (click)="auditPrevious.emit()"
+              >
+                <span class="material-icons text-sm!">chevron_left</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-xs btn-soft tooltip tooltip-bottom"
+                data-tip="Next likely mistake (n)"
+                aria-label="Next likely mistake"
+                [disabled]="focus.index >= focus.total - 1"
+                (click)="auditNext.emit()"
+              >
+                <span class="material-icons text-sm!">chevron_right</span>
+              </button>
+              <button
+                type="button"
+                class="btn btn-xs btn-soft tooltip tooltip-bottom"
+                data-tip="Hide the review, its lines and markers (Esc)"
+                aria-label="Stop review"
+                (click)="auditExit.emit()"
+              >
+                Stop review
+              </button>
+            </span>
+          </div>
+        }
         <div
           class="panel !border-none !rounded-b-none"
           [style.width.px]="viewOptions.imageSizePx()"
@@ -58,11 +140,40 @@
             [imageReload]="imageReload()"
             [(selectedKeypoint)]="selectedKeypoint"
             [disableInteractions]="disableInteractions()"
+            [visibleKeypoints]="shownKeypoints()"
+            [epipolarGuides]="epipolarGuides()"
+            [guideViews]="guideViews()"
             (keypointUpdated)="
               handleKeypointUpdated($event.kp, $event.position, fv)
             "
           ></app-image-label-widget>
         </div>
+        @if (guideLegend().length) {
+          <div
+            class="px-2 py-1 text-xs flex flex-wrap items-center gap-x-3 gap-y-1 opacity-80"
+            data-testid="epipolar-legend"
+            [style.max-width.px]="viewOptions.imageSizePx()"
+          >
+            <span>
+              {{ selectedKeypoint() }} must lie on the line of each view
+              @if (epipolarLineCount() > guideLegend().length) {
+                ({{ guideLegend().length }} of {{ epipolarLineCount() }}, steepest crossings)
+              }:
+            </span>
+            @for (item of guideLegend(); track item.view) {
+              <span class="flex items-center gap-1">
+                <span
+                  class="inline-block w-4 border-t-2 border-dashed"
+                  [style.border-color]="item.color"
+                ></span>
+                {{ item.view }}
+              </span>
+            }
+            @if (epipolarGuides()?.predictedPoint) {
+              <span>✕ = where those views put it</span>
+            }
+          </div>
+        }
       </div>
     }
 
@@ -91,6 +202,7 @@
                 [fv]="fv"
                 [revision]="cacheBuster()"
                 [imageReload]="imageReload()"
+                [visibleKeypoints]="visibleKeypoints()"
                 [disableInteractions]="true"
                 [zoomableInteractivityDisabled]="true"
               ></app-image-label-widget>

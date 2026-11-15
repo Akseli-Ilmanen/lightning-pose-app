@@ -35,6 +35,55 @@
         class="absolute top-0 left-0 h-full w-full"
       ></app-keypoint-container>
     }
+    @if (!viewOptions.isShowingTemporalContext() && epipolarGuides(); as guides) {
+      <!-- Epipolar guides in image pixels, under the pointer so clicks still place keypoints. -->
+      <svg
+        class="absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
+        data-testid="epipolar-guides"
+        aria-hidden="true"
+      >
+        @for (line of guideLines(); track line.view) {
+          <g [attr.data-from-view]="line.view">
+            @for (d of line.paths; track $index) {
+              <polyline
+                [attr.points]="d"
+                fill="none"
+                [attr.stroke]="line.color"
+                stroke-width="1"
+                stroke-dasharray="4 3"
+                vector-effect="non-scaling-stroke"
+                stroke-opacity="0.9"
+              />
+            }
+            @if (line.labelAt; as at) {
+              <text
+                [attr.x]="at.x"
+                [attr.y]="at.y"
+                dx="4"
+                dy="-4"
+                font-size="10"
+                [attr.fill]="line.color"
+                stroke="black"
+                stroke-width="2"
+                paint-order="stroke fill"
+              >{{ line.view }}</text>
+            }
+          </g>
+        }
+        @if (guides.predictedPoint; as p) {
+          <g data-testid="epipolar-predicted">
+            <line
+              [attr.x1]="p.x - 5" [attr.y1]="p.y - 5" [attr.x2]="p.x + 5" [attr.y2]="p.y + 5"
+              stroke="white" stroke-width="2" vector-effect="non-scaling-stroke"
+            />
+            <line
+              [attr.x1]="p.x - 5" [attr.y1]="p.y + 5" [attr.x2]="p.x + 5" [attr.y2]="p.y - 5"
+              stroke="white" stroke-width="2" vector-effect="non-scaling-stroke"
+            />
+          </g>
+        }
+      </svg>
+    }
   </div>
 </app-zoomable-content>
 @if (currentFrameMessage(); as message) {

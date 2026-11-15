@@ -29,6 +29,14 @@ const DEFAULT_CONTRAST = 1;
 const DEFAULT_IMAGE_SIZE = 500;
 const UMAMI_DEBOUNCE_TIME_MS = 10000;
 const TEMPORAL_CONTEXT_PLAY_INTERVAL_MS = 300;
+export const DEFAULT_MAX_EPIPOLAR_LINES = 3;
+const MAX_EPIPOLAR_LINES_LIMIT = 20;
+
+/** Whole number of lines, at least 1. */
+export function clampMaxEpipolarLines(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_MAX_EPIPOLAR_LINES;
+  return Math.min(MAX_EPIPOLAR_LINES_LIMIT, Math.max(1, Math.round(value)));
+}
 
 @Injectable()
 /** Scoped service holding per-session labeler display options, persisted to localStorage. */
@@ -111,8 +119,33 @@ export class LabelerViewOptionsService {
   keepSelectedKeypoint = signal(
     storedFlag('labeler-view-options.keepSelectedKeypoint', false),
   );
+  /** Epipolar lines of the selected keypoint (needs camera calibration). */
+  showEpipolarLines = signal(
+    storedFlag('labeler-view-options.showEpipolarLines', true),
+  );
+  /** How many epipolar lines to draw: the ones that cross most steeply come first. */
+  maxEpipolarLines = signal(
+    clampMaxEpipolarLines(
+      storedNumber('labeler-view-options.maxEpipolarLines', DEFAULT_MAX_EPIPOLAR_LINES),
+    ),
+  );
+  setMaxEpipolarLines(value: number) {
+    this.maxEpipolarLines.set(clampMaxEpipolarLines(value));
+  }
 
   constructor() {
+    effect(() =>
+      localStorage.setItem(
+        'labeler-view-options.showEpipolarLines',
+        String(this.showEpipolarLines()),
+      ),
+    );
+    effect(() =>
+      localStorage.setItem(
+        'labeler-view-options.maxEpipolarLines',
+        String(this.maxEpipolarLines()),
+      ),
+    );
     effect(() =>
       localStorage.setItem(
         'labeler-view-options.image-size',
