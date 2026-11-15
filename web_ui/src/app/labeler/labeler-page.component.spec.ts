@@ -44,6 +44,13 @@ class StubLabelerCenterPanelComponent {
   hasPreviousFrame = input(false);
   numLabeledFramesGetter = input<unknown>(null);
   imageReload = input(0);
+  auditFocus = input<unknown>(null);
+  visibleKeypoints = input<string[] | null>(null);
+  auditOnlyFlagged = input(true);
+  auditOnlyFlaggedChange = output<boolean>();
+  auditNext = output<void>();
+  auditPrevious = output<void>();
+  auditExit = output<void>();
   saved = output<unknown>();
   savingChange = output<boolean>();
   nextFrame = output<void>();
