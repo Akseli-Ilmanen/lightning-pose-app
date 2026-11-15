@@ -85,6 +85,24 @@ export class PredictionTracesComponent {
     source: this.nFrames,
     computation: () => null,
   });
+  /**
+   * Marking a segment to extract from: left-drag marks instead of panning and
+   * the segment controls show. Off again when the video changes.
+   */
+  marking = linkedSignal<number, boolean>({
+    source: this.nFrames,
+    computation: () => false,
+  });
+
+  protected startMarking() {
+    this.marking.set(true);
+  }
+
+  protected stopMarking() {
+    this.marking.set(false);
+    this.segment.set(null);
+  }
+
   protected extractCount = this.settings.extractCount;
   /** How frames are picked from the segment. */
   protected selection = this.settings.selection;

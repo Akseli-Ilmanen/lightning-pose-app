@@ -72,6 +72,8 @@ export class TraceRowComponent {
   removable = input(false);
   /** Keep the time marker centred (shared by all rows). */
   follow = input(false);
+  /** Left-drag marks the segment instead of panning. */
+  markSegment = input(false);
   /** Zoomed time window, shared by all rows. */
   xWindow = model<FrameWindow | null>(null);
   /** Marked segment, shared by all rows. */

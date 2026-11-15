@@ -12,6 +12,7 @@
       [movement]="movement()"
       [removable]="rows().length > 1"
       [follow]="followPlayback()"
+      [markSegment]="marking()"
       [(xWindow)]="xWindow"
       [(segment)]="segment"
       (seek)="seek.emit($event)"
@@ -45,12 +46,24 @@
       />
       <span class="opacity-80">centre on frame</span>
     </label>
-    <span class="opacity-50" title="Click: jump to frame · Drag: mark segment · Right-drag: zoom x and y separately · Wheel: zoom time (over the y axis: zoom values) · Ctrl+wheel: zoom values · Shift+wheel or Alt+drag: pan (with centre on frame: move through the recording) · Double-click / A: autoscale. Zooming time zooms every trace.">
+    <span class="opacity-50" title="Click: jump to frame · Drag: pan (while marking a segment: mark it) · Right-drag: zoom x and y separately · Wheel: zoom time (over the y axis: zoom values) · Ctrl+wheel: zoom values · Shift+wheel or Alt+drag: pan (with centre on frame: move through the recording) · Double-click / A: autoscale. Zooming time zooms every trace.">
       click · drag · right-drag · wheel
     </span>
   </div>
 
-  <!-- Segment and extraction -->
+  <!-- Segment and extraction: only while marking, so left-drag pans otherwise -->
+  @if (!marking()) {
+    <div class="flex items-center px-2 py-1">
+      <button
+        type="button"
+        class="btn btn-xs rounded-sm"
+        title="Mark a segment (drag on a trace or use the current frame) and extract frames from it"
+        (click)="startMarking()"
+      >
+        Extract from segment
+      </button>
+    </div>
+  } @else {
   <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1">
     <span class="opacity-60">Segment</span>
     @if (segment(); as s) {
@@ -106,7 +119,7 @@
         [disabled]="!canExtract() || extracting() || extractProblem() != null"
         (click)="onExtractClick()"
       >
-        Extract from segment
+        Extract frames
         @if (extracting()) {
           <span class="loading loading-spinner loading-xs"></span>
         }
@@ -117,5 +130,14 @@
         <span class="opacity-50">Pause and choose a label file under Extract frames.</span>
       }
     }
+    <button
+      type="button"
+      class="btn btn-xs btn-ghost rounded-sm ml-auto"
+      title="Stop marking; left-drag pans again"
+      (click)="stopMarking()"
+    >
+      Done
+    </button>
   </div>
+  }
 </div>

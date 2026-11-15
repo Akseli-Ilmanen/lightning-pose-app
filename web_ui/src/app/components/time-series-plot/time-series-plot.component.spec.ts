@@ -144,7 +144,24 @@ describe('TimeSeriesPlotComponent', () => {
     expect(seen).toEqual([200]);
   });
 
-  it('marks a segment on drag instead of seeking', () => {
+  it('pans time on a left drag, without seeking or marking', () => {
+    component.xWindow.set({ start: 100, end: 300 });
+    fixture.detectChanges();
+    const seen: number[] = [];
+    component.seek.subscribe((f) => seen.push(f));
+    pointer('pointerdown', 200);
+    pointer('pointermove', 150);
+    pointer('pointerup', 150);
+    expect(seen).toEqual([]);
+    expect(component.segment()).toBeNull();
+    const w = component.xWindow()!;
+    expect(w.start).toBeGreaterThan(100);
+    expect(w.end - w.start).toBe(200);
+  });
+
+  it('marks a segment on drag instead of seeking when markSegment', () => {
+    fixture.componentRef.setInput('markSegment', true);
+    fixture.detectChanges();
     const seen: number[] = [];
     component.seek.subscribe((f) => seen.push(f));
     pointer('pointerdown', 100);

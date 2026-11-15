@@ -69,7 +69,7 @@ interface Layout {
  * (white plot, tick axes with time in seconds, red time marker).
  *
  * - Click: emits `seek` with the frame under the pointer.
- * - Drag: marks a segment (two-way `segment`).
+ * - Drag: pans time, or marks a segment (two-way `segment`) when `markSegment`.
  * - Wheel: zooms time around the pointer. Ctrl+wheel, or the wheel over the
  *   value axis, zooms values only; the wheel over the time axis zooms time only.
  * - Right-drag: zooms each axis on its own (left/right time, up/down values).
@@ -104,6 +104,8 @@ export class TimeSeriesPlotComponent {
   ariaLabel = input('Prediction time series');
   /** Marked segment [start, end), or null. */
   segment = model<FrameSegment | null>(null);
+  /** Left-drag marks a segment instead of panning time. */
+  markSegment = input(false);
   seek = output<number>();
 
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -168,6 +170,8 @@ export class TimeSeriesPlotComponent {
     frame: number;
     /** What the drag does: mark a segment, pan, or zoom each axis (right-drag). */
     action: 'segment' | 'pan' | 'zoom';
+    /** Plain left button: a click seeks, and panning leaves the values alone. */
+    left: boolean;
     /** Value under the pointer at press, the y anchor for right-drag zoom. */
     value: number;
     dragging: boolean;
@@ -262,8 +266,10 @@ export class TimeSeriesPlotComponent {
     let action: 'segment' | 'pan' | 'zoom';
     if (event.button === 2) action = 'zoom';
     else if (event.button === 1 || (event.button === 0 && event.altKey)) action = 'pan';
-    else if (event.button === 0) action = 'segment';
+    else if (event.button === 0) action = this.markSegment() ? 'segment' : 'pan';
     else return;
+    // A plain left press still seeks on click; a left drag pans time only.
+    const left = event.button === 0 && !event.altKey;
     if (action !== 'segment') event.preventDefault();
     (event.target as Element).setPointerCapture?.(event.pointerId);
     this.press = {
@@ -271,6 +277,7 @@ export class TimeSeriesPlotComponent {
       y: event.clientY,
       frame: this.frameAt(event),
       action,
+      left,
       value: this.valueAt(event),
       dragging: false,
       window: this.window(),
@@ -304,7 +311,7 @@ export class TimeSeriesPlotComponent {
       const frames = Math.round((-dx / l.width) * span);
       if (this.follow()) this.scrub(press.current, frames);
       else this.xWindow.set(panWindow(press.window, frames, this.nFrames()));
-      if (this.mode() === 'lines') {
+      if (this.mode() === 'lines' && !press.left) {
         const [lo, hi] = press.yRange;
         const shift = (dy / l.height) * (hi - lo);
         this.yLimits.set([lo + shift, hi + shift]);
@@ -317,7 +324,11 @@ export class TimeSeriesPlotComponent {
   protected onPointerUp() {
     const press = this.press;
     this.press = null;
-    if (!press || press.action !== 'segment') return;
+    if (!press) return;
+    if (press.action !== 'segment') {
+      if (press.left && !press.dragging) this.seek.emit(press.frame);
+      return;
+    }
     if (press.dragging) {
       this.segment.set(this.dragPreview());
       this.dragPreview.set(null);

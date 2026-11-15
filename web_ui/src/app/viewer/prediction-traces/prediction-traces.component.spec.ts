@@ -251,17 +251,17 @@ describe('PredictionTracesComponent', () => {
     expect(box('nose').checked).toBeFalse();
   });
 
-  it('turns on centre-on-frame for the plot and remembers it', () => {
+  it('centres on the frame by default; turning it off is remembered', () => {
     const toggle = fixture.nativeElement.querySelector(
       'input[aria-label="Centre on current frame"]',
     ) as HTMLInputElement;
-    expect(toggle.checked).toBeFalse();
+    expect(toggle.checked).toBeTrue();
     toggle.click();
     fixture.detectChanges();
     const plot = fixture.debugElement.query(By.directive(TimeSeriesPlotComponent))
       .componentInstance as TimeSeriesPlotComponent;
-    expect(plot.follow()).toBeTrue();
-    expect(TestBed.inject(PredictionTracesSettingsService).followPlayback()).toBeTrue();
+    expect(plot.follow()).toBeFalse();
+    expect(TestBed.inject(PredictionTracesSettingsService).followPlayback()).toBeFalse();
   });
 
   it('keeps the choices across a page reload', async () => {
@@ -340,24 +340,28 @@ describe('PredictionTracesComponent', () => {
   it('extracts the requested number of frames from the segment, diverse or uniform', async () => {
     const emitted: unknown[] = [];
     component.extractSegment.subscribe((e) => emitted.push(e));
+    button('Extract from segment')!.click();
     component.segment.set([20, 60]);
     fixture.detectChanges();
     await fixture.whenStable();
-    button('Extract from segment')!.click();
+    button('Extract frames')!.click();
     expect(emitted).toEqual([{ segment: [20, 60], nFrames: 10, selection: 'kmeans' }]);
     await choose('How to pick frames', 'uniform');
-    button('Extract from segment')!.click();
+    button('Extract frames')!.click();
     expect(emitted.at(-1)).toEqual({ segment: [20, 60], nFrames: 10, selection: 'uniform' });
   });
 
   it('blocks extracting more frames than the segment holds', async () => {
+    button('Extract from segment')!.click();
     component.segment.set([20, 25]);
     fixture.detectChanges();
     await fixture.whenStable();
-    expect(button('Extract from segment')!.disabled).toBeTrue();
+    expect(button('Extract frames')!.disabled).toBeTrue();
   });
 
   it('sets the segment from the current frame', async () => {
+    button('Extract from segment')!.click();
+    fixture.detectChanges();
     fixture.componentRef.setInput('currentFrame', 30);
     fixture.detectChanges();
     button('Start at current frame')!.click();
@@ -365,5 +369,23 @@ describe('PredictionTracesComponent', () => {
     fixture.detectChanges();
     button('End at current frame')!.click();
     expect(component.segment()).toEqual([30, 71]);
+  });
+
+  it('left-drag pans until Extract from segment is clicked, and Done clears the segment', async () => {
+    const plot = () =>
+      fixture.debugElement.query(By.directive(TimeSeriesPlotComponent))
+        .componentInstance as TimeSeriesPlotComponent;
+    expect(plot().markSegment()).toBeFalse();
+    expect(button('Start at current frame')).toBeUndefined();
+    button('Extract from segment')!.click();
+    await settle();
+    expect(plot().markSegment()).toBeTrue();
+    component.segment.set([20, 60]);
+    await settle();
+    button('Done')!.click();
+    await settle();
+    expect(plot().markSegment()).toBeFalse();
+    expect(component.segment()).toBeNull();
+    expect(button('Start at current frame')).toBeUndefined();
   });
 });

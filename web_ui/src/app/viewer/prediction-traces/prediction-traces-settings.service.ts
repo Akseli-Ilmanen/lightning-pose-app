@@ -45,7 +45,7 @@ export const DEFAULT_CHOICES: PredictionTracesChoices = {
   yLimitsBySignal: {},
   extractCount: 10,
   selection: 'kmeans',
-  followPlayback: false,
+  followPlayback: true,
 };
 
 /**
