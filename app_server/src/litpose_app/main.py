@@ -124,6 +124,7 @@ from .routes import (
     inference,
     labeler,
     models,
+    pose_signals,
     project,
     rename_project_files,
     rglob,
@@ -139,6 +140,7 @@ router.include_router(extract_frames.router)
 router.include_router(configs.router)
 router.include_router(config_root.router)
 router.include_router(models.router)
+router.include_router(pose_signals.router)
 router.include_router(videos.router)
 router.include_router(inference.router)
 router.include_router(validate_files.router)

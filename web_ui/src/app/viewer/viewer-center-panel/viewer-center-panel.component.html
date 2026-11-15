@@ -64,6 +64,21 @@
                   [skeletonThickness]="viewOptions.skeletonThickness()"
                   [skeletonOpacity]="viewOptions.skeletonOpacity()"
                 ></app-keypoint-container>
+                @if (headingArrows().get(w.id); as a) {
+                  <svg
+                    class="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
+                    data-testid="heading-arrow"
+                    aria-hidden="true"
+                  >
+                    <g stroke-linecap="round" stroke-linejoin="round">
+                      <line [attr.x1]="a.x1" [attr.y1]="a.y1" [attr.x2]="a.x2" [attr.y2]="a.y2" stroke="black" stroke-width="5" stroke-opacity="0.6" />
+                      <polygon [attr.points]="a.head" fill="black" stroke="black" stroke-width="3" stroke-opacity="0.6" />
+                      <line [attr.x1]="a.x1" [attr.y1]="a.y1" [attr.x2]="a.x2" [attr.y2]="a.y2" stroke="#ffd60a" stroke-width="2.5" />
+                      <polygon [attr.points]="a.head" fill="#ffd60a" />
+                      <circle [attr.cx]="a.x1" [attr.cy]="a.y1" r="2.5" fill="#ffd60a" stroke="black" stroke-width="1" />
+                    </g>
+                  </svg>
+                }
               </app-video-tile>
             </app-zoomable-content>
           </div>
@@ -71,6 +86,37 @@
       </div>
     }
   </div>
+
+  @if (sessionKey() && traceSources().length > 0) {
+    <div class="border-t border-base-content/10 shrink-0">
+      <button
+        type="button"
+        class="btn btn-ghost btn-xs w-full justify-start rounded-none font-normal opacity-80"
+        [attr.aria-expanded]="viewOptions.showTraces()"
+        aria-controls="prediction-traces"
+        (click)="viewOptions.showTraces.set(!viewOptions.showTraces())"
+      >
+        <span class="material-icons text-sm!">{{
+          viewOptions.showTraces() ? 'expand_more' : 'chevron_right'
+        }}</span>
+        Prediction traces
+      </button>
+      @if (viewOptions.showTraces()) {
+        <app-prediction-traces
+          id="prediction-traces"
+          [sources]="traceSources()"
+          [nFrames]="traceFrameCount()"
+          [fps]="videoPlayerState.fps()"
+          [currentFrame]="currentFrame()"
+          [likelihoodThreshold]="viewOptions.likelihoodThreshold()"
+          [canExtract]="canExtractSegment()"
+          [extracting]="isExtracting()"
+          (seek)="videoPlayerState.seekToFrame($event)"
+          (extractSegment)="extractSegment.emit($event)"
+        ></app-prediction-traces>
+      }
+    </div>
+  }
 
   <app-video-player-controls
     #playbackBar

@@ -92,6 +92,11 @@ async def extract_frames(
             )
             request.labelFile = mvlabelfile
 
+        if request.method == "random" and request.options is not None:
+            problem = random_options_message(request.options)
+            if problem:
+                raise HTTPException(status_code=422, detail=problem)
+
         if request.method == "manual":
             assert request.manualFrameOptions is not None
             # Ensure non-negative, unique, frame indices sorted ascending
@@ -131,6 +136,22 @@ async def extract_frames(
             raise HTTPException(status_code=409, detail=conflict_detail(exc.paths)) from exc
 
     return "ok"
+
+
+def random_options_message(options: RandomMethodOptions) -> str | None:
+    """Why these k-means options cannot run, or None when they can."""
+    if options.nFrames < 1:
+        return "Choose at least one frame to extract."
+    if options.frameRange is None:
+        return None
+    start, end = options.frameRange
+    if start < 0 or end <= start:
+        return f"Segment {start}–{end} is empty."
+    if end - start < options.nFrames:
+        return (
+            f"Cannot pick {options.nFrames} frames from a segment of {end - start} frames."
+        )
+    return None
 
 
 class ValidateExtractFramesResponse(BaseModel):

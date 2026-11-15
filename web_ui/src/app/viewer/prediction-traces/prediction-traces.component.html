@@ -1,0 +1,121 @@
+<div class="flex flex-col text-xs">
+  @for (row of rows(); track $index; let i = $index) {
+    <app-trace-row
+      [class.border-t]="i > 0"
+      class="border-base-content/10"
+      [index]="i"
+      [sources]="sources()"
+      [nFrames]="nFrames()"
+      [fps]="fps()"
+      [currentFrame]="currentFrame()"
+      [likelihoodThreshold]="likelihoodThreshold()"
+      [movement]="movement()"
+      [removable]="rows().length > 1"
+      [follow]="followPlayback()"
+      [(xWindow)]="xWindow"
+      [(segment)]="segment"
+      (seek)="seek.emit($event)"
+      (remove)="removeTrace(i)"
+    ></app-trace-row>
+  }
+
+  <!-- Shared by all rows: adding rows, centring, gestures -->
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 pt-1">
+    <button
+      type="button"
+      class="btn btn-xs rounded-sm"
+      aria-label="Add trace"
+      [disabled]="rows().length >= maxTraces"
+      [title]="rows().length >= maxTraces ? 'Up to ' + maxTraces + ' traces' : 'Plot another signal under this one, on the same time axis'"
+      (click)="addTrace()"
+    >
+      <span class="material-icons text-sm!">add</span>
+      Add trace
+    </button>
+    <label
+      class="ml-auto flex items-center gap-1 cursor-pointer"
+      title="Keep the red time marker in the middle and slide the traces under it. Zoom with the wheel; Shift+wheel or Alt+drag then moves through the recording."
+    >
+      <input
+        type="checkbox"
+        class="checkbox checkbox-xs rounded-sm"
+        aria-label="Centre on current frame"
+        [checked]="followPlayback()"
+        (change)="setFollowPlayback($any($event.target).checked)"
+      />
+      <span class="opacity-80">centre on frame</span>
+    </label>
+    <span class="opacity-50" title="Click: jump to frame · Drag: mark segment · Right-drag: zoom x and y separately · Wheel: zoom time (over the y axis: zoom values) · Ctrl+wheel: zoom values · Shift+wheel or Alt+drag: pan (with centre on frame: move through the recording) · Double-click / A: autoscale. Zooming time zooms every trace.">
+      click · drag · right-drag · wheel
+    </span>
+  </div>
+
+  <!-- Segment and extraction -->
+  <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1">
+    <span class="opacity-60">Segment</span>
+    @if (segment(); as s) {
+      <span class="rounded-sm bg-blue-600/25 px-1.5 py-0.5 tabular-nums">
+        {{ s[0] }}–{{ s[1] - 1 }} · {{ segmentLength() }} frames
+      </span>
+    } @else {
+      <span class="opacity-50">drag on the plot</span>
+    }
+    <button type="button" class="btn btn-xs rounded-sm" (click)="setSegmentStart()">
+      Start at current frame
+    </button>
+    <button type="button" class="btn btn-xs rounded-sm" (click)="setSegmentEnd()">
+      End at current frame
+    </button>
+    @if (segment()) {
+      <button
+        type="button"
+        class="btn btn-xs btn-ghost rounded-sm"
+        aria-label="Clear segment"
+        (click)="segment.set(null)"
+      >
+        Clear
+      </button>
+      <span class="grow"></span>
+      <label class="flex items-center gap-1">
+        Extract
+        <input
+          type="number"
+          min="1"
+          [max]="segmentLength()"
+          class="input input-xs w-14 rounded-sm tabular-nums"
+          aria-label="Frames to extract from segment"
+          [value]="extractCount()"
+          (input)="onExtractCountInput($any($event.target).value)"
+        />
+        frames
+        <span class="opacity-50 tabular-nums">({{ coveragePercent().toFixed(1) }}%)</span>
+      </label>
+      <select
+        class="select select-xs w-auto rounded-sm"
+        aria-label="How to pick frames"
+        title="Diverse: k-means on motion energy, one frame per cluster. Uniform: evenly spaced across the segment."
+        (change)="setSelection($any($event.target).value)"
+      >
+        <option value="kmeans" [selected]="selection() === 'kmeans'">Diverse (k-means)</option>
+        <option value="uniform" [selected]="selection() === 'uniform'">Uniform</option>
+      </select>
+      <button
+        type="button"
+        class="btn btn-primary btn-xs rounded-sm"
+        title="Adds the frames to the labeling queue chosen under Extract frames."
+        [disabled]="!canExtract() || extracting() || extractProblem() != null"
+        (click)="onExtractClick()"
+      >
+        Extract from segment
+        @if (extracting()) {
+          <span class="loading loading-spinner loading-xs"></span>
+        }
+      </button>
+      @if (extractProblem(); as problem) {
+        <span class="text-error">{{ problem }}</span>
+      } @else if (!canExtract()) {
+        <span class="opacity-50">Pause and choose a label file under Extract frames.</span>
+      }
+    }
+  </div>
+</div>

@@ -37,6 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+signals = [
+    "movement>=0.13",
+]
 dev = [
     "honcho",
     "httpx~=0.28.0",

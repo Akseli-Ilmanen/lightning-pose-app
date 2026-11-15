@@ -50,6 +50,8 @@ export class ViewerViewOptionsService {
   showSliderNumbers = signal(
     storedFlag('viewer-view-options.showSliderNumbers', false),
   );
+  /** Show prediction traces (position, confidence, movement signals) under the videos. */
+  showTraces = signal(storedFlag('viewer-view-options.showTraces', true));
   isSkeletonThicknessDefault = computed(
     () => this.skeletonThickness() === DEFAULT_SKELETON_THICKNESS,
   );
@@ -116,6 +118,12 @@ export class ViewerViewOptionsService {
       localStorage.setItem(
         'viewer-view-options.showSliderNumbers',
         String(this.showSliderNumbers()),
+      ),
+    );
+    effect(() =>
+      localStorage.setItem(
+        'viewer-view-options.showTraces',
+        String(this.showTraces()),
       ),
     );
 

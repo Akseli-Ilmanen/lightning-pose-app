@@ -80,6 +80,11 @@
         class="block h-full min-w-0 z-30"
         [sessionKey]="_sessionKey()"
         (extractFrame)="onExtractFrameShortcut()"
+        [canExtractSegment]="
+          !isExtractFramesInteractionDisabled() && !!extractFramesLabelFileKey()
+        "
+        [isExtracting]="isExtractFramesLoading()"
+        (extractSegment)="handleExtractSegment($event)"
       ></app-viewer-center-panel>
     </as-split-area>
 

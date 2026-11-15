@@ -34,6 +34,7 @@ import { Router } from '@angular/router';
 import { LabelFilePickerComponent } from '../../label-file-picker/label-file-picker.component';
 import { RpcService } from '../../rpc.service';
 import { ExtractFramesRequest } from '../../extract-frames-request';
+import { SegmentExtractRequest } from '../prediction-traces/pose-signals';
 import { ToastService } from '../../toast.service';
 import _ from 'lodash';
 import { SplitAreaComponent, SplitComponent } from 'angular-split';
@@ -408,10 +409,51 @@ export class ViewerPageComponent implements OnInit {
       this.isExtractFramesLoading.set(false);
     }
   }
+  /**
+   * Extract diverse frames (k-means) from a segment marked on the prediction
+   * traces into the label file chosen under Extract frames.
+   */
+  protected async handleExtractSegment(request: SegmentExtractRequest) {
+    if (
+      this.isExtractFramesInteractionDisabled() ||
+      !this.extractFramesLabelFileKey()
+    ) {
+      return;
+    }
+    const [start, end] = request.segment;
+    this.isExtractFramesLoading.set(true);
+    try {
+      await this.rpc.call('extractFrames', {
+        ...this.extractTarget(),
+        method: 'random',
+        options: {
+          nFrames: request.nFrames,
+          selection: request.selection,
+          frameRange: [start, end],
+        },
+      } satisfies ExtractFramesRequest);
+      this.toastService.showToast({
+        content: `Added ${request.nFrames} ${request.selection === 'uniform' ? 'evenly spaced' : 'diverse'} frames from ${start}–${end - 1} to the labeling queue.`,
+      });
+    } catch (err) {
+      const detail = (err as { error?: { detail?: string } })?.error?.detail;
+      this.toastService.showToast({
+        content:
+          typeof detail === 'string' && detail
+            ? detail
+            : 'Could not extract frames from this segment.',
+        variant: 'error',
+      });
+    } finally {
+      this.isExtractFramesLoading.set(false);
+    }
+  }
+
   private viewerCenterPanel = viewChild<ViewerCenterPanelComponent>(
     ViewerCenterPanelComponent,
   );
-  private toExtractFramesRequest(): ExtractFramesRequest {
+  /** Project, session and label file the Viewer extracts into. */
+  private extractTarget() {
     const labelFile = this.sessionService
       .allLabelFiles()
       .find((mvf) => mvf.key === this.extractFramesLabelFileKey())!;
@@ -428,6 +470,12 @@ export class ViewerPageComponent implements OnInit {
       labelFile: {
         views: labelFile.views,
       },
+    };
+  }
+
+  private toExtractFramesRequest(): ExtractFramesRequest {
+    return {
+      ...this.extractTarget(),
       method: 'manual',
       manualFrameOptions: {
         frame_index_list: [this.videoPlayerState.currentFrameSignal()],

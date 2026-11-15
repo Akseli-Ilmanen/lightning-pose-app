@@ -26,29 +26,27 @@ def frame_selection_kmeans_impl(
     end_frame: int | None = None,
 ) -> NDArray[np.integer]:
     """
-    Reads all frames, computes motion energy, clusters into n_frames clusters
-    and picks a frame out of each cluster.
-    """
+    Reads the frames in [beg_frame, end_frame), computes motion energy, clusters
+    into n_frames clusters and picks a frame out of each cluster.
 
-    # read all frames, reshape, chop off unwanted portions of beginning/end
-    frames = _read_all_frames(
-        config=config,
-        video_file=video_path,
-    )
-    frame_count = frames.shape[0]
-    beg_frame = 0
-    # leave room for context
-    end_frame = (
-        frame_count - config.FRAME_EXTRACT_N_CONTEXT_FRAMES
-        if end_frame is None
-        else end_frame
-    )
+    end_frame=None means the end of the video. Only the frames in the range are
+    decoded, so a short segment of a long video is quick. Returned indices are
+    frame indices in the whole video.
+    """
+    with video_capture(video_path) as cap:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # leave room for context at the end of the video
+    last = frame_count - config.FRAME_EXTRACT_N_CONTEXT_FRAMES
+    end_frame = last if end_frame is None else min(end_frame, last)
+    beg_frame = max(0, beg_frame)
     end_frame = max(beg_frame, end_frame)
-    """
-    beg_frame = int(float(frame_range[0]) * frame_count)
-    end_frame = int(float(frame_range[1]) * frame_count) - 2  # leave room for context
-    """
-    batches = np.reshape(frames, (frames.shape[0], -1))[beg_frame:end_frame]
+    if end_frame - beg_frame < n_frames:
+        raise ValueError(
+            f"Cannot select {n_frames} frames from a range of {end_frame - beg_frame} frames."
+        )
+
+    frames = _read_frame_range(config, video_path, beg_frame, end_frame)
+    batches = np.reshape(frames, (frames.shape[0], -1))
 
     # take temporal diffs
     logger.info("Computing motion energy")
@@ -88,9 +86,21 @@ def frame_selection_kmeans_impl(
     return idxs_prototypes
 
 
-def _read_all_frames(config: Config, video_file: Path) -> np.ndarray:
-    """Read every frame from video_file, resized to config.FRAME_EXTRACT_RESIZE_DIMS."""
-    return _read_nth_frames(config=config, video_file=video_file, n=1)
+def _read_frame_range(config: Config, video_file: Path, beg: int, end: int) -> np.ndarray:
+    """Read frames [beg, end) from video_file, resized like _read_nth_frames."""
+    frames = []
+    with video_capture(video_file) as cap:
+        if beg > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, beg)
+        for _ in tqdm(range(end - beg)):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_resize = cv2.resize(
+                frame, (config.FRAME_EXTRACT_RESIZE_DIMS, config.FRAME_EXTRACT_RESIZE_DIMS)
+            )
+            frames.append(cv2.cvtColor(frame_resize, cv2.COLOR_BGR2RGB).astype(np.float16))
+    return np.array(frames)
 
 
 def _read_nth_frames(

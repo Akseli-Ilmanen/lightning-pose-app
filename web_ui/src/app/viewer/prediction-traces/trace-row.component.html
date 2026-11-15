@@ -1,0 +1,223 @@
+<div class="flex flex-col text-xs">
+  <!-- Toolbar: what this row plots -->
+  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1">
+    @if (sources().length > 1) {
+      <select
+        class="select select-xs w-auto rounded-sm"
+        aria-label="Predictions to plot"
+        (change)="onSourceChange($any($event.target).value)"
+      >
+        @for (s of sources(); track s.key) {
+          <option [value]="s.key" [selected]="s.key === sourceKey()">
+            {{ s.modelKey }} · {{ s.viewName }}
+          </option>
+        }
+      </select>
+    }
+
+    <select
+      class="select select-xs w-auto rounded-sm font-medium"
+      aria-label="Signal"
+      (change)="onSignalChange($any($event.target).value)"
+    >
+      @for (s of builtinSignals; track s.id) {
+        <option [value]="s.id" [selected]="s.id === signalId()">{{ s.label }}</option>
+      }
+      @if (movementSignals().length > 0) {
+        <optgroup
+          [label]="movement()?.movementAvailable ? 'movement' : 'movement (not installed)'"
+        >
+          @for (s of movementSignals(); track s.id) {
+            <option
+              [value]="s.id"
+              [selected]="s.id === signalId()"
+              [disabled]="!movement()?.movementAvailable"
+            >
+              {{ s.label }}
+            </option>
+          }
+        </optgroup>
+      }
+    </select>
+
+    @if (hasKeypoints()) {
+      <details class="dropdown">
+        <summary
+          class="select select-xs w-auto rounded-sm list-none"
+          aria-label="Keypoints to plot"
+        >
+          {{ keypointMenuLabel() }}
+        </summary>
+        <div
+          class="dropdown-content z-50 mt-1 w-52 max-h-72 overflow-y-auto rounded-sm border border-base-content/20 bg-base-200 p-1 shadow-lg"
+        >
+          <div class="flex gap-1 px-1 pb-1 border-b border-base-content/10 mb-1">
+            <button type="button" class="btn btn-xs btn-ghost rounded-sm" (click)="selectAllKeypoints(true)">All</button>
+            <button type="button" class="btn btn-xs btn-ghost rounded-sm" (click)="selectAllKeypoints(false)">None</button>
+          </div>
+          @for (kp of keypointChoices(); track kp) {
+            <label class="flex items-center gap-2 px-1 py-0.5 rounded-sm hover:bg-base-content/10 cursor-pointer">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-xs rounded-sm"
+                [attr.aria-label]="'Plot ' + kp"
+                [checked]="isKeypointSelected(kp)"
+                (change)="toggleKeypoint(kp, $any($event.target).checked)"
+              />
+              <span class="inline-block h-0.5 w-3" [style.background]="keypointColor(kp)"></span>
+              <span class="truncate">{{ kp }}</span>
+            </label>
+          }
+        </div>
+      </details>
+    }
+
+    @if (hasSpace()) {
+      <select
+        class="select select-xs w-auto rounded-sm"
+        aria-label="Axes to plot"
+        (change)="setSpaceChoice($any($event.target).value)"
+      >
+        <option value="xy" [selected]="spaceChoice() === 'xy'">x and y</option>
+        <option value="x" [selected]="spaceChoice() === 'x'">x</option>
+        <option value="y" [selected]="spaceChoice() === 'y'">y</option>
+      </select>
+    }
+
+    @if (movementSignal(); as info) {
+      @for (p of info.params; track p.name) {
+        @if (p.kind === 'keypoint') {
+          <label class="flex items-center gap-1">
+            <span class="opacity-60">{{ p.label }}</span>
+            <select
+              class="select select-xs w-auto rounded-sm"
+              [attr.aria-label]="p.label"
+              (change)="onParamChange(p.name, $any($event.target).value)"
+            >
+              @for (k of keypointChoices(); track k) {
+                <option [value]="k" [selected]="k === paramValue(p.name)">{{ k }}</option>
+              }
+            </select>
+          </label>
+        } @else if (p.kind === 'choice') {
+          <label class="flex items-center gap-1">
+            <span class="opacity-60">{{ p.label }}</span>
+            <select
+              class="select select-xs w-auto rounded-sm"
+              [attr.aria-label]="p.label"
+              (change)="onParamChange(p.name, $any($event.target).value)"
+            >
+              @for (c of p.choices ?? []; track c) {
+                <option [value]="c" [selected]="c === paramValue(p.name)">{{ c }}</option>
+              }
+            </select>
+          </label>
+        }
+      }
+      <label
+        class="flex items-center gap-1 cursor-pointer"
+        [title]="'Drop positions with likelihood below ' + (likelihoodThreshold() * 100).toFixed(0) + '% (View options) before computing.'"
+      >
+        <input
+          type="checkbox"
+          class="checkbox checkbox-xs rounded-sm"
+          aria-label="Mask low confidence"
+          [checked]="maskLowConfidence()"
+          (change)="onMaskChange($any($event.target).checked)"
+        />
+        <span class="opacity-80">mask &lt; {{ (likelihoodThreshold() * 100).toFixed(0) }}%</span>
+      </label>
+      @if (isStale() && !loading()) {
+        <button type="button" class="btn btn-xs rounded-sm" (click)="plot()">Update</button>
+      }
+      <a
+        class="material-icons text-sm! opacity-50 hover:opacity-100"
+        target="_blank"
+        rel="noopener"
+        [href]="info.docUrl"
+        [title]="info.function"
+        aria-label="movement documentation"
+        >help_outline</a
+      >
+    }
+    @if (loading()) {
+      <span class="loading loading-spinner loading-xs" aria-label="Computing"></span>
+    }
+    @if (mode() === 'lines') {
+      <span class="flex items-center gap-1" role="group" aria-label="Value axis range">
+        <span class="opacity-60">y</span>
+        <input
+          type="number"
+          step="any"
+          class="input input-xs w-16 rounded-sm tabular-nums"
+          aria-label="Y minimum"
+          [class.opacity-60]="yLimits() == null"
+          [value]="formatLimit(shownYRange()?.[0])"
+          (change)="onYLimitChange(0, $any($event.target).value)"
+        />
+        <span class="opacity-60">–</span>
+        <input
+          type="number"
+          step="any"
+          class="input input-xs w-16 rounded-sm tabular-nums"
+          aria-label="Y maximum"
+          [class.opacity-60]="yLimits() == null"
+          [value]="formatLimit(shownYRange()?.[1])"
+          (change)="onYLimitChange(1, $any($event.target).value)"
+        />
+        <label class="flex items-center gap-1 cursor-pointer" title="Autoscale the y axis to what is visible. Untick, or type a min or max, to fix the range.">
+          <input
+            type="checkbox"
+            class="checkbox checkbox-xs rounded-sm"
+            aria-label="Autoscale y"
+            [checked]="yLimits() == null"
+            (change)="onYAutoChange($any($event.target).checked)"
+          />
+          <span class="opacity-80">auto</span>
+        </label>
+      </span>
+    }
+    @if (removable()) {
+      <button
+        type="button"
+        class="ml-auto btn btn-ghost btn-xs btn-square rounded-sm"
+        aria-label="Close this trace"
+        title="Close this trace"
+        (click)="remove.emit()"
+      >
+        <span class="material-icons text-sm!">close</span>
+      </button>
+    }
+  </div>
+
+  @if (error()) {
+    <div class="px-2 pb-1 text-error" role="alert">{{ error() }}</div>
+  }
+  @if (movement() && !movement()!.movementAvailable && !isBuiltin()) {
+    <div class="px-2 pb-1 opacity-70">
+      Derived signals need movement:
+      <code>pip install "lightning-pose-app[signals]"</code>
+    </div>
+  }
+
+  <app-time-series-plot
+    class="mx-2 border border-black/30"
+    [series]="series()"
+    [nFrames]="nFrames()"
+    [currentFrame]="currentFrame()"
+    [mode]="mode()"
+    [height]="plotHeight()"
+    [unit]="unit()"
+    [yLabel]="yLabel()"
+    [fps]="fps()"
+    [wrapAngles]="wrapAngles()"
+    [gutters]="gutters"
+    [yLimits]="yLimits()"
+    (yLimitsChange)="setYLimits($event)"
+    [follow]="follow()"
+    [(xWindow)]="xWindow"
+    [ariaLabel]="plotLabel()"
+    [(segment)]="segment"
+    (seek)="seek.emit($event)"
+  ></app-time-series-plot>
+</div>

@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -60,6 +61,14 @@ class RandomMethodOptions(BaseModel):
     """Options for k-means random frame selection."""
 
     nFrames: int = 10
+
+    selection: Literal["kmeans", "uniform"] = "kmeans"
+    """kmeans: diverse frames (motion energy, PCA, k-means). uniform: evenly spaced."""
+
+    frameRange: tuple[int, int] | None = None
+    """Optional segment [start, end) to select from. None means the whole video.
+
+    Set by the Viewer when the user marks a segment on the prediction traces."""
 
 
 class ManualMethodOptions(BaseModel):
@@ -257,13 +266,29 @@ def _frame_selection_kmeans(
     Offload it to a separate process because this is CPU-intensive.
     """
 
+    beg_frame, end_frame = options.frameRange or (0, None)
+    if options.selection == "uniform":
+        if end_frame is None:
+            with video_capture(session.views[0].videoPath) as cap:
+                end_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            end_frame -= config.FRAME_EXTRACT_N_CONTEXT_FRAMES
+        return uniform_frame_indices(beg_frame, end_frame, options.nFrames)
     future = process_pool.submit(
         frame_selection_kmeans_impl,
         config,
         session.views[0].videoPath,
         options.nFrames,
+        beg_frame,
+        end_frame,
     )
     return future.result()
+
+
+def uniform_frame_indices(beg: int, end: int, n: int) -> NDArray[np.integer]:
+    """n evenly spaced frames in [beg, end): the centre of each of n equal bins."""
+    if end - beg < n:
+        raise ValueError(f"Cannot select {n} frames from a range of {end - beg} frames.")
+    return (beg + (np.arange(n) + 0.5) * (end - beg) / n).astype(int)
 
 
 def _export_frames(

@@ -52,6 +52,17 @@ import {
   DropdownTriggerDirective,
 } from '../../components/dropdown/dropdown.component';
 import { ToastService } from '../../toast.service';
+import { PredictionTracesComponent } from '../prediction-traces/prediction-traces.component';
+import {
+  HeadingOverlay,
+  SegmentExtractRequest,
+  TraceSource,
+} from '../prediction-traces/pose-signals';
+import {
+  HeadingArrow,
+  headingArrow,
+} from '../prediction-traces/heading-arrow';
+import { PredictionTracesSettingsService } from '../prediction-traces/prediction-traces-settings.service';
 
 @Component({
   selector: 'app-viewer-center-panel',
@@ -65,6 +76,7 @@ import { ToastService } from '../../toast.service';
     DropdownContentComponent,
     DropdownTriggerDirective,
     DropdownTriggerComponent,
+    PredictionTracesComponent,
   ],
   templateUrl: './viewer-center-panel.component.html',
   styleUrl: './viewer-center-panel.component.css',
@@ -73,6 +85,10 @@ import { ToastService } from '../../toast.service';
 export class ViewerCenterPanelComponent implements OnChanges {
   sessionKey = input<string | null>(null);
   extractFrame = output<void>();
+  /** Segment extraction is possible: a label file is chosen and the player is paused. */
+  canExtractSegment = input(false);
+  isExtracting = input(false);
+  extractSegment = output<SegmentExtractRequest>();
 
   _loadedSessionKey = signal<string | null>(null);
   private csvParser = inject(CsvParserService);
@@ -206,6 +222,7 @@ export class ViewerCenterPanelComponent implements OnChanges {
       this.videoPlayerState.duration.set(0);
       this.videoPlayerState.fps.set(30);
       this._loadedSessionKey.set(sessionKey);
+      this.traceSources.set([]);
       this.widgetModels.set([]);
       return;
     }
@@ -286,6 +303,7 @@ export class ViewerCenterPanelComponent implements OnChanges {
         this._loadedSessionKey.set(sessionKey);
       }
       this.widgetModels.set(newWidgetModels);
+      this.traceSources.set(this.pureComputeTraceSources(sessionKey));
       this.checkMetadataConsistency(ffprobeDataCache);
     } finally {
       this.loadingService.isLoading.set(false);
@@ -332,6 +350,55 @@ export class ViewerCenterPanelComponent implements OnChanges {
         variant: 'warning',
       });
     }
+  }
+
+  /** Loaded predictions for the prediction traces, ordered by model then view. */
+  protected traceSources = signal<(TraceSource & { length: number })[]>([]);
+  protected traceFrameCount = computed(() => {
+    const fromVideo = this.videoPlayerState.lastFrameSignal() + 1;
+    return fromVideo > 1 ? fromVideo : (this.traceSources()[0]?.length ?? 0);
+  });
+
+  /** Prediction traces choices; head direction there draws an arrow on each video. */
+  private tracesSettings = inject(PredictionTracesSettingsService);
+
+  /** Arrow per view at the current frame, in video pixels (movement's forward vector). */
+  protected headingArrows = computed(() => {
+    const heading = this.tracesSettings.heading();
+    const arrows = new Map<string, HeadingArrow>();
+    const sources = this.traceSources();
+    if (!heading || !this.viewOptions.showTraces() || sources.length === 0) return arrows;
+    // The model chosen in the traces, or the first shown one.
+    const modelKey = sources.some((s) => s.modelKey === heading.modelKey)
+      ? heading.modelKey!
+      : sources[0].modelKey;
+    const overlay: HeadingOverlay = { ...heading, modelKey };
+    const frame = this.currentFrame();
+    const threshold = this.viewOptions.likelihoodThreshold();
+    for (const source of sources) {
+      if (source.modelKey !== overlay.modelKey) continue;
+      const arrow = headingArrow(source, overlay, frame, threshold);
+      if (arrow) arrows.set(source.viewName, arrow);
+    }
+    return arrows;
+  });
+
+  private pureComputeTraceSources(sessionKey: string) {
+    const models = this.enabledViewsKeypoints.modelsShown();
+    const views = this.enabledViewsKeypoints.viewsShown();
+    return Array.from(this.predictionFiles.entries())
+      .filter(
+        ([pf]) =>
+          pf.sessionKey === sessionKey &&
+          models.includes(pf.modelKey) &&
+          views.includes(pf.viewName),
+      )
+      .sort(
+        ([a], [b]) =>
+          models.indexOf(a.modelKey) - models.indexOf(b.modelKey) ||
+          views.indexOf(a.viewName) - views.indexOf(b.viewName),
+      )
+      .map(([pf, df]) => toTraceSource(pf, df));
   }
 
   private pureComputeNecessaryPredictionFiles(sessionKey: string) {
@@ -511,4 +578,34 @@ export class ViewerCenterPanelComponent implements OnChanges {
     );
     return _.keyBy(predictionLists, 'view_name');
   }
+}
+
+/** Plain per-frame columns of one prediction file, read lazily from the DataFrame. */
+function toTraceSource(
+  pf: PredictionFile,
+  df: dfd.DataFrame,
+): TraceSource & { length: number } {
+  const columns = new Set(df.columns);
+  const keypoints = _.uniq(
+    df.columns.map((c) => Pair.fromMapKey<string, string>(c).first),
+  );
+  const cache = new Map<string, Float64Array>();
+  return {
+    key: `${pf.modelKey}/${pf.viewName}`,
+    modelKey: pf.modelKey,
+    viewName: pf.viewName,
+    path: pf.path,
+    keypoints,
+    length: df.index.length,
+    column(keypoint, coord) {
+      const key = new Pair(keypoint, coord).toMapKey();
+      if (!columns.has(key)) return null;
+      let values = cache.get(key);
+      if (!values) {
+        values = Float64Array.from(df.column(key).values as unknown[], Number);
+        cache.set(key, values);
+      }
+      return values;
+    },
+  };
 }

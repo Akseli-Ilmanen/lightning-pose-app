@@ -29,6 +29,10 @@ export interface ExtractedFramePredictionList {
 
 export interface EFRRandomOptions {
   nFrames: number;
+  /** kmeans: diverse frames (default). uniform: evenly spaced. */
+  selection?: 'kmeans' | 'uniform';
+  /** Segment [start, end) to pick frames from. Omitted means the whole video. */
+  frameRange?: [number, number];
 }
 
 export interface ManualFrameOptions {
