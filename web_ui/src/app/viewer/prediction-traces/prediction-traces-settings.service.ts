@@ -15,16 +15,16 @@ export interface TraceChoices {
   maskLowConfidence: boolean;
   /** Preferred model/view, `${modelKey}/${viewName}`. */
   sourceKey: string | null;
+  /** Arguments per movement signal, e.g. head direction's left/right keypoint. Per row. */
+  paramsBySignal: Record<string, Record<string, unknown>>;
+  /** Fixed y range per signal; absent means autoscale. Per row. */
+  yLimitsBySignal: Record<string, [number, number]>;
 }
 
 /** What the user chose in the Prediction traces panel. */
 export interface PredictionTracesChoices {
   /** Stacked rows, 1 to MAX_TRACES. */
   traces: TraceChoices[];
-  /** Arguments per movement signal, e.g. head direction's left/right keypoint. Shared by rows. */
-  paramsBySignal: Record<string, Record<string, unknown>>;
-  /** Fixed y range per signal; absent means autoscale. Shared by rows. */
-  yLimitsBySignal: Record<string, [number, number]>;
   extractCount: number;
   selection: 'kmeans' | 'uniform';
   /** Keep the time marker centred and slide the traces under it (ethograph's centre mode). */
@@ -37,12 +37,15 @@ export const DEFAULT_TRACE: TraceChoices = {
   spaceChoice: 'xy',
   maskLowConfidence: false,
   sourceKey: null,
+  paramsBySignal: {},
+  yLimitsBySignal: {},
 };
+
+/** Arrow colour per row, so several head-direction rows can be told apart on the video. */
+export const HEADING_COLORS = ['#ffd60a', '#22d3ee', '#f472b6'] as const;
 
 export const DEFAULT_CHOICES: PredictionTracesChoices = {
   traces: [DEFAULT_TRACE],
-  paramsBySignal: {},
-  yLimitsBySignal: {},
   extractCount: 10,
   selection: 'kmeans',
   followPlayback: true,
@@ -58,34 +61,36 @@ export class PredictionTracesSettingsService {
   readonly choices = signal<PredictionTracesChoices>(load());
 
   readonly traces = computed(() => this.choices().traces);
-  readonly paramsBySignal = computed(() => this.choices().paramsBySignal);
-  readonly yLimitsBySignal = computed(() => this.choices().yLimitsBySignal);
   readonly extractCount = computed(() => this.choices().extractCount);
   readonly selection = computed(() => this.choices().selection);
   readonly followPlayback = computed(() => this.choices().followPlayback);
 
   /**
-   * Keypoints for the head-direction arrow on the videos, from the first row
-   * showing head direction; null when no row does. `modelKey` comes from that
-   * row's source; the Viewer falls back to the first shown model.
+   * One head-direction arrow per row showing head direction, with that row's
+   * keypoints, source and colour. `modelKey` comes from the row's source; the
+   * Viewer falls back to the first shown model.
    */
-  readonly heading = computed<
-    (Omit<HeadingOverlay, 'modelKey'> & { modelKey: string | null }) | null
-  >(() => {
-    const c = this.choices();
-    const row = c.traces.find((t) => t.signalId === 'head_direction');
-    if (!row) return null;
-    const p = c.paramsBySignal['head_direction'] ?? {};
-    if (typeof p['left_keypoint'] !== 'string' || typeof p['right_keypoint'] !== 'string') {
-      return null;
-    }
-    return {
-      modelKey: row.sourceKey?.split('/')[0] ?? null,
-      left: p['left_keypoint'],
-      right: p['right_keypoint'],
-      cameraView: p['camera_view'] === 'bottom_up' ? 'bottom_up' : 'top_down',
-    };
-  });
+  readonly headings = computed<
+    (Omit<HeadingOverlay, 'modelKey'> & { modelKey: string | null; row: number; color: string })[]
+  >(() =>
+    this.choices().traces.flatMap((row, i) => {
+      if (row.signalId !== 'head_direction') return [];
+      const p = row.paramsBySignal['head_direction'] ?? {};
+      if (typeof p['left_keypoint'] !== 'string' || typeof p['right_keypoint'] !== 'string') {
+        return [];
+      }
+      return [
+        {
+          row: i,
+          color: HEADING_COLORS[i % HEADING_COLORS.length],
+          modelKey: row.sourceKey?.split('/')[0] ?? null,
+          left: p['left_keypoint'],
+          right: p['right_keypoint'],
+          cameraView: p['camera_view'] === 'bottom_up' ? ('bottom_up' as const) : ('top_down' as const),
+        },
+      ];
+    }),
+  );
 
   constructor() {
     effect(() => save(this.choices()));
@@ -108,7 +113,7 @@ export class PredictionTracesSettingsService {
       if (c.traces.length >= MAX_TRACES) return c;
       const last = c.traces[c.traces.length - 1] ?? DEFAULT_TRACE;
       const signalId = last.signalId === 'confidence' ? 'position' : 'confidence';
-      return { ...c, traces: [...c.traces, { ...last, signalId }] };
+      return { ...c, traces: [...c.traces, structuredClone({ ...last, signalId })] };
     });
   }
 
@@ -118,20 +123,19 @@ export class PredictionTracesSettingsService {
     );
   }
 
-  setParams(signalId: string, params: Record<string, unknown>) {
-    this.choices.update((c) => ({
-      ...c,
-      paramsBySignal: { ...c.paramsBySignal, [signalId]: params },
-    }));
+  setParams(index: number, signalId: string, params: Record<string, unknown>) {
+    const t = this.choices().traces[index];
+    if (!t) return;
+    this.updateTrace(index, { paramsBySignal: { ...t.paramsBySignal, [signalId]: params } });
   }
 
-  setYLimits(signalId: string, range: [number, number] | null) {
-    this.choices.update((c) => {
-      const yLimitsBySignal = { ...c.yLimitsBySignal };
-      if (range) yLimitsBySignal[signalId] = range;
-      else delete yLimitsBySignal[signalId];
-      return { ...c, yLimitsBySignal };
-    });
+  setYLimits(index: number, signalId: string, range: [number, number] | null) {
+    const t = this.choices().traces[index];
+    if (!t) return;
+    const yLimitsBySignal = { ...t.yLimitsBySignal };
+    if (range) yLimitsBySignal[signalId] = range;
+    else delete yLimitsBySignal[signalId];
+    this.updateTrace(index, { yLimitsBySignal });
   }
 }
 
@@ -149,9 +153,20 @@ function load(): PredictionTracesChoices {
       }
       choices.traces = [row];
     }
+    // Saved when params / y limits were shared by all rows: each row starts from them.
+    const shared = parsed as Record<string, unknown>;
+    const sharedParams = isRecord(shared['paramsBySignal']) ? shared['paramsBySignal'] : {};
+    const sharedYLimits = isRecord(shared['yLimitsBySignal']) ? shared['yLimitsBySignal'] : {};
+    delete (choices as unknown as Record<string, unknown>)['paramsBySignal'];
+    delete (choices as unknown as Record<string, unknown>)['yLimitsBySignal'];
     choices.traces = choices.traces
       .slice(0, MAX_TRACES)
-      .map((t) => ({ ...DEFAULT_TRACE, ...t }));
+      .map((t: Partial<TraceChoices>) => ({
+        ...DEFAULT_TRACE,
+        ...t,
+        paramsBySignal: t.paramsBySignal ?? structuredClone(sharedParams),
+        yLimitsBySignal: t.yLimitsBySignal ?? structuredClone(sharedYLimits),
+      }));
     if (choices.traces.length === 0) choices.traces = [{ ...DEFAULT_TRACE }];
     return choices;
   } catch {
@@ -165,4 +180,9 @@ function save(choices: PredictionTracesChoices) {
   } catch {
     // Storage blocked: choices still hold for this page.
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isRecord(v: unknown): v is Record<string, any> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
 }

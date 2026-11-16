@@ -64,7 +64,7 @@
                   [skeletonThickness]="viewOptions.skeletonThickness()"
                   [skeletonOpacity]="viewOptions.skeletonOpacity()"
                 ></app-keypoint-container>
-                @if (headingArrows().get(w.id); as a) {
+                @for (a of headingArrows().get(w.id) ?? []; track a.row) {
                   <svg
                     class="absolute inset-0 w-full h-full pointer-events-none overflow-visible"
                     data-testid="heading-arrow"
@@ -73,9 +73,9 @@
                     <g stroke-linecap="round" stroke-linejoin="round">
                       <line [attr.x1]="a.x1" [attr.y1]="a.y1" [attr.x2]="a.x2" [attr.y2]="a.y2" stroke="black" stroke-width="5" stroke-opacity="0.6" />
                       <polygon [attr.points]="a.head" fill="black" stroke="black" stroke-width="3" stroke-opacity="0.6" />
-                      <line [attr.x1]="a.x1" [attr.y1]="a.y1" [attr.x2]="a.x2" [attr.y2]="a.y2" stroke="#ffd60a" stroke-width="2.5" />
-                      <polygon [attr.points]="a.head" fill="#ffd60a" />
-                      <circle [attr.cx]="a.x1" [attr.cy]="a.y1" r="2.5" fill="#ffd60a" stroke="black" stroke-width="1" />
+                      <line [attr.x1]="a.x1" [attr.y1]="a.y1" [attr.x2]="a.x2" [attr.y2]="a.y2" [attr.stroke]="a.color" stroke-width="2.5" />
+                      <polygon [attr.points]="a.head" [attr.fill]="a.color" />
+                      <circle [attr.cx]="a.x1" [attr.cy]="a.y1" r="2.5" [attr.fill]="a.color" stroke="black" stroke-width="1" />
                     </g>
                   </svg>
                 }

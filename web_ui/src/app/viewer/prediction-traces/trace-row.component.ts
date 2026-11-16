@@ -116,7 +116,7 @@ export class TraceRowComponent {
   protected params = computed<Record<string, unknown>>(() => {
     const info = this.movementSignal();
     const defaults = this.defaultParams(info);
-    const saved = info ? this.settings.paramsBySignal()[info.id] : undefined;
+    const saved = info ? this.choice().paramsBySignal[info.id] : undefined;
     if (!info || !saved) return defaults;
     const keypoints = this.source()?.keypoints ?? [];
     const out = { ...defaults };
@@ -278,13 +278,13 @@ export class TraceRowComponent {
   private plotView = viewChild(TimeSeriesPlotComponent);
   /** Fixed y range for the chosen signal (saved per signal), or null to autoscale. */
   protected yLimits = computed<[number, number] | null>(
-    () => this.settings.yLimitsBySignal()[this.signalId()] ?? null,
+    () => this.choice().yLimitsBySignal[this.signalId()] ?? null,
   );
   /** Range on screen, for the min/max fields (autoscaled values when auto). */
   protected shownYRange = computed(() => this.yLimits() ?? this.plotView()?.yRange() ?? null);
 
   protected setYLimits(range: [number, number] | null) {
-    this.settings.setYLimits(this.signalId(), range);
+    this.settings.setYLimits(this.index(), this.signalId(), range);
   }
 
   /** A typed min (0) or max (1). Ignored unless min < max. */
@@ -346,7 +346,7 @@ export class TraceRowComponent {
   protected onParamChange(name: string, value: string) {
     const info = this.movementSignal();
     if (!info) return;
-    this.settings.setParams(info.id, { ...this.params(), [name]: value });
+    this.settings.setParams(this.index(), info.id, { ...this.params(), [name]: value });
     this.replotIfDerived();
   }
 
@@ -363,9 +363,9 @@ export class TraceRowComponent {
     const info = this.movementSignal();
     if (!info) return;
     const params = this.params();
-    const saved = this.settings.paramsBySignal()[info.id];
+    const saved = this.choice().paramsBySignal[info.id];
     if (JSON.stringify(saved) !== JSON.stringify(params)) {
-      this.settings.setParams(info.id, params);
+      this.settings.setParams(this.index(), info.id, params);
     }
   }
 

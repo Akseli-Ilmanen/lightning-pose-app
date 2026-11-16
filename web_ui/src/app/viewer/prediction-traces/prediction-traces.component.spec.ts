@@ -217,11 +217,28 @@ describe('PredictionTracesComponent', () => {
   it('tells the Viewer which keypoints to draw the heading arrow from', async () => {
     const settings = TestBed.inject(PredictionTracesSettingsService);
     await choose('Signal', 'head_direction');
-    expect(settings.heading()).toEqual(
-      jasmine.objectContaining({ left: 'ear_l', right: 'ear_r', cameraView: 'top_down' }),
-    );
+    expect(settings.headings()).toEqual([
+      jasmine.objectContaining({ row: 0, left: 'ear_l', right: 'ear_r', cameraView: 'top_down' }),
+    ]);
     await choose('Signal', 'position');
-    expect(settings.heading()).toBeNull();
+    expect(settings.headings()).toEqual([]);
+  });
+
+  it('keeps two head-direction rows independent, one arrow each', () => {
+    const settings = TestBed.inject(PredictionTracesSettingsService);
+    settings.updateTrace(0, { signalId: 'head_direction' });
+    settings.addTrace();
+    settings.updateTrace(1, { signalId: 'head_direction' });
+    settings.setParams(0, 'head_direction', { left_keypoint: 'ear_l', right_keypoint: 'ear_r' });
+    settings.setParams(1, 'head_direction', { left_keypoint: 'nose', right_keypoint: 'ear_r' });
+    settings.setYLimits(0, 'head_direction', [-90, 90]);
+    const [a, b] = settings.traces();
+    expect(a.paramsBySignal['head_direction']['left_keypoint']).toBe('ear_l');
+    expect(b.paramsBySignal['head_direction']['left_keypoint']).toBe('nose');
+    expect(b.yLimitsBySignal['head_direction']).toBeUndefined();
+    const headings = settings.headings();
+    expect(headings.map((h) => h.left)).toEqual(['ear_l', 'nose']);
+    expect(headings[0].color).not.toBe(headings[1].color);
   });
 
   it('keeps the choices when the panel is closed and opened again', async () => {

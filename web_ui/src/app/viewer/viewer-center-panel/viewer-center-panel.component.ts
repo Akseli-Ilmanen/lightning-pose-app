@@ -362,23 +362,30 @@ export class ViewerCenterPanelComponent implements OnChanges {
   /** Prediction traces choices; head direction there draws an arrow on each video. */
   private tracesSettings = inject(PredictionTracesSettingsService);
 
-  /** Arrow per view at the current frame, in video pixels (movement's forward vector). */
+  /**
+   * Arrows per view at the current frame, in video pixels (movement's forward
+   * vector): one per head-direction row, in that row's colour.
+   */
   protected headingArrows = computed(() => {
-    const heading = this.tracesSettings.heading();
-    const arrows = new Map<string, HeadingArrow>();
+    const arrows = new Map<string, (HeadingArrow & { color: string; row: number })[]>();
     const sources = this.traceSources();
-    if (!heading || !this.viewOptions.showTraces() || sources.length === 0) return arrows;
-    // The model chosen in the traces, or the first shown one.
-    const modelKey = sources.some((s) => s.modelKey === heading.modelKey)
-      ? heading.modelKey!
-      : sources[0].modelKey;
-    const overlay: HeadingOverlay = { ...heading, modelKey };
+    if (!this.viewOptions.showTraces() || sources.length === 0) return arrows;
     const frame = this.currentFrame();
     const threshold = this.viewOptions.likelihoodThreshold();
-    for (const source of sources) {
-      if (source.modelKey !== overlay.modelKey) continue;
-      const arrow = headingArrow(source, overlay, frame, threshold);
-      if (arrow) arrows.set(source.viewName, arrow);
+    for (const heading of this.tracesSettings.headings()) {
+      // The model chosen in that row, or the first shown one.
+      const modelKey = sources.some((s) => s.modelKey === heading.modelKey)
+        ? heading.modelKey!
+        : sources[0].modelKey;
+      const overlay: HeadingOverlay = { ...heading, modelKey };
+      for (const source of sources) {
+        if (source.modelKey !== modelKey) continue;
+        const arrow = headingArrow(source, overlay, frame, threshold);
+        if (!arrow) continue;
+        const list = arrows.get(source.viewName) ?? [];
+        list.push({ ...arrow, color: heading.color, row: heading.row });
+        arrows.set(source.viewName, list);
+      }
     }
     return arrows;
   });
