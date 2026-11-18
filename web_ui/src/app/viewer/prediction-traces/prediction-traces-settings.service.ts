@@ -13,8 +13,10 @@ export interface TraceChoices {
   selectedKeypoints: string[] | null;
   spaceChoice: 'xy' | 'x' | 'y';
   maskLowConfidence: boolean;
-  /** Preferred model/view, `${modelKey}/${viewName}`. */
-  sourceKey: string | null;
+  /** Preferred model; null (or one no longer shown) means the first shown model. */
+  modelKey: string | null;
+  /** Views (cameras) to plot. null until the user changes it (then every view). */
+  selectedViews: string[] | null;
   /** Arguments per movement signal, e.g. head direction's left/right keypoint. Per row. */
   paramsBySignal: Record<string, Record<string, unknown>>;
   /** Fixed y range per signal; absent means autoscale. Per row. */
@@ -36,7 +38,8 @@ export const DEFAULT_TRACE: TraceChoices = {
   selectedKeypoints: null,
   spaceChoice: 'xy',
   maskLowConfidence: false,
-  sourceKey: null,
+  modelKey: null,
+  selectedViews: null,
   paramsBySignal: {},
   yLimitsBySignal: {},
 };
@@ -48,7 +51,7 @@ export const DEFAULT_CHOICES: PredictionTracesChoices = {
   traces: [DEFAULT_TRACE],
   extractCount: 10,
   selection: 'kmeans',
-  followPlayback: true,
+  followPlayback: false,
 };
 
 /**
@@ -83,7 +86,7 @@ export class PredictionTracesSettingsService {
         {
           row: i,
           color: HEADING_COLORS[i % HEADING_COLORS.length],
-          modelKey: row.sourceKey?.split('/')[0] ?? null,
+          modelKey: row.modelKey,
           left: p['left_keypoint'],
           right: p['right_keypoint'],
           cameraView: p['camera_view'] === 'bottom_up' ? ('bottom_up' as const) : ('top_down' as const),
@@ -151,6 +154,9 @@ function load(): PredictionTracesChoices {
       for (const key of Object.keys(DEFAULT_TRACE) as (keyof TraceChoices)[]) {
         if (key in parsed) (row as unknown as Record<string, unknown>)[key] = parsed[key];
       }
+      if ('sourceKey' in parsed) {
+        (row as unknown as Record<string, unknown>)['sourceKey'] = parsed.sourceKey;
+      }
       choices.traces = [row];
     }
     // Saved when params / y limits were shared by all rows: each row starts from them.
@@ -161,17 +167,35 @@ function load(): PredictionTracesChoices {
     delete (choices as unknown as Record<string, unknown>)['yLimitsBySignal'];
     choices.traces = choices.traces
       .slice(0, MAX_TRACES)
-      .map((t: Partial<TraceChoices>) => ({
-        ...DEFAULT_TRACE,
-        ...t,
-        paramsBySignal: t.paramsBySignal ?? structuredClone(sharedParams),
-        yLimitsBySignal: t.yLimitsBySignal ?? structuredClone(sharedYLimits),
-      }));
+      .map((saved: Partial<TraceChoices> & { sourceKey?: unknown }) => {
+        const { sourceKey, ...t } = saved;
+        return {
+          ...DEFAULT_TRACE,
+          ...fromSourceKey(sourceKey),
+          ...t,
+          paramsBySignal: t.paramsBySignal ?? structuredClone(sharedParams),
+          yLimitsBySignal: t.yLimitsBySignal ?? structuredClone(sharedYLimits),
+        };
+      });
     if (choices.traces.length === 0) choices.traces = [{ ...DEFAULT_TRACE }];
     return choices;
   } catch {
     return structuredClone(DEFAULT_CHOICES);
   }
+}
+
+/**
+ * A row saved when it showed one model and view (`${modelKey}/${viewName}`)
+ * keeps that model and that one view.
+ */
+function fromSourceKey(sourceKey: unknown): Partial<TraceChoices> {
+  if (typeof sourceKey !== 'string') return {};
+  const slash = sourceKey.lastIndexOf('/');
+  if (slash <= 0) return {};
+  return {
+    modelKey: sourceKey.slice(0, slash),
+    selectedViews: [sourceKey.slice(slash + 1)],
+  };
 }
 
 function save(choices: PredictionTracesChoices) {

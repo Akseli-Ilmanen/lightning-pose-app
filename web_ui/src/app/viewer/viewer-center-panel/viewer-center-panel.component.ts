@@ -180,13 +180,19 @@ export class ViewerCenterPanelComponent implements OnChanges {
           Math.max(this.currentFrame(), 0),
           predictions.index.length - 1,
         );
+        // A keypoint this model does not predict has no position: do not draw it.
+        if (
+          !predictions.columns.includes(new Pair(keypointName, 'x').toMapKey())
+        ) {
+          return false;
+        }
         const likelihoodKey = new Pair(keypointName, 'likelihood').toMapKey();
         if (predictions.columns.includes(likelihoodKey)) {
           const likelihood = predictions.at(
             i.toString(),
             likelihoodKey,
           ) as number;
-          return likelihood >= this.viewOptions.likelihoodThreshold();
+          return likelihood >=this.viewOptions.likelihoodThreshold();
         }
         return true;
       }),

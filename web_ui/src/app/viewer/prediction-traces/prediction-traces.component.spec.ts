@@ -10,19 +10,20 @@ import { TimeSeriesPlotComponent } from '../../components/time-series-plot/time-
 
 const N = 100;
 
-function source(): TraceSource {
+function source(viewName = 'cam'): TraceSource {
   const data: Record<string, Float64Array> = {
     'nose|x': Float64Array.from({ length: N }, (_, i) => i),
     'nose|y': new Float64Array(N),
     'nose|likelihood': new Float64Array(N).fill(0.9),
     'ear_l|x': new Float64Array(N),
+    'ear_l|likelihood': new Float64Array(N).fill(0.5),
     'ear_r|x': new Float64Array(N),
   };
   return {
-    key: 'm1/cam',
+    key: `m1/${viewName}`,
     modelKey: 'm1',
-    viewName: 'cam',
-    path: 'm1/video_preds/s.csv',
+    viewName,
+    path: viewName === 'cam' ? 'm1/video_preds/s.csv' : `m1/video_preds/s_${viewName}.csv`,
     keypoints: ['nose', 'ear_l', 'ear_r'],
     column: (kp, coord) => data[`${kp}|${coord}`] ?? null,
   };
@@ -181,6 +182,85 @@ describe('PredictionTracesComponent', () => {
     expect(rpc.call).not.toHaveBeenCalledWith('computePoseSignal', jasmine.anything());
   });
 
+  describe('with two views', () => {
+    const labels = () =>
+      (row(0) as unknown as { series: () => { label: string }[] }).series().map((s) => s.label);
+    const box = (label: string) =>
+      fixture.nativeElement.querySelector(`input[aria-label="${label}"]`) as HTMLInputElement;
+    const click = async (el: HTMLElement) => {
+      el.click();
+      await settle();
+    };
+
+    beforeEach(async () => {
+      fixture.componentRef.setInput('sources', [source('cam'), source('cam2')]);
+      await settle();
+    });
+
+    it('shows one keypoint in every view at first, and a view can be unticked', async () => {
+      await choose('Signal', 'confidence');
+      expect(box('Plot view cam').checked).toBeTrue();
+      expect(box('Plot view cam2').checked).toBeTrue();
+      // One keypoint: the rows are the views.
+      expect(labels()).toEqual(['cam', 'cam2']);
+      await click(box('Plot view cam2'));
+      expect(labels()).toEqual(['nose']);
+    });
+
+    it('shows several keypoints in several views, each keypoint with its views together', async () => {
+      await choose('Signal', 'confidence');
+      await click(box('Plot ear_l'));
+      expect(labels()).toEqual(['cam · nose', 'cam2 · nose', 'cam · ear_l', 'cam2 · ear_l']);
+      await click(fixture.nativeElement.querySelector('button[aria-label="Plot no views"]'));
+      expect(labels()).toEqual([]);
+      await click(fixture.nativeElement.querySelector('button[aria-label="Plot all views"]'));
+      expect(labels().length).toBe(4);
+    });
+
+    it('computes a movement signal once per ticked view', async () => {
+      await click(box('Plot view cam2'));
+      await choose('Signal', 'speed');
+      const paths = () =>
+        rpc.call.calls
+          .allArgs()
+          .filter(([method]) => method === 'computePoseSignal')
+          .map(([, request]) => (request as { predictionPath: string }).predictionPath);
+      expect(paths()).toEqual(['m1/video_preds/s.csv']);
+      await click(box('Plot view cam2'));
+      expect(paths()).toEqual(['m1/video_preds/s.csv', 'm1/video_preds/s_cam2.csv']);
+      expect(labels()).toEqual(['cam · nose', 'cam2 · nose']);
+    });
+
+    it('keeps the one view of a row saved before views could be ticked', () => {
+      localStorage.setItem(
+        'prediction-traces.settings',
+        JSON.stringify({ traces: [{ signalId: 'confidence', sourceKey: 'm1/cam2' }] }),
+      );
+      const reloaded = TestBed.runInInjectionContext(() => new PredictionTracesSettingsService());
+      expect(reloaded.traces()[0]).toEqual(
+        jasmine.objectContaining({ modelKey: 'm1', selectedViews: ['cam2'] }),
+      );
+    });
+  });
+
+  it('masks positions below the likelihood threshold when mask is ticked', async () => {
+    const noseX = () =>
+      (row(0) as unknown as { series: () => { values: ArrayLike<number | null> }[] }).series()[0]
+        .values;
+    const mask = fixture.nativeElement.querySelector(
+      'input[aria-label="Mask low confidence"]',
+    ) as HTMLInputElement;
+    expect(noseX()[5]).toBe(5);
+    mask.click();
+    await settle();
+    // nose has likelihood 0.9: kept at the default 0.9 threshold, masked at 0.95.
+    expect(noseX()[5]).toBe(5);
+    fixture.componentRef.setInput('likelihoodThreshold', 0.95);
+    await settle();
+    expect(noseX()[5]).toBeNull();
+    expect(rpc.call).not.toHaveBeenCalledWith('computePoseSignal', jasmine.anything());
+  });
+
   it('keeps a typed y range per signal until auto is ticked', async () => {
     const plot = () =>
       fixture.debugElement.query(By.directive(TimeSeriesPlotComponent))
@@ -268,17 +348,17 @@ describe('PredictionTracesComponent', () => {
     expect(box('nose').checked).toBeFalse();
   });
 
-  it('centres on the frame by default; turning it off is remembered', () => {
+  it('does not centre on the frame by default; turning it on is remembered', () => {
     const toggle = fixture.nativeElement.querySelector(
       'input[aria-label="Centre on current frame"]',
     ) as HTMLInputElement;
-    expect(toggle.checked).toBeTrue();
+    expect(toggle.checked).toBeFalse();
     toggle.click();
     fixture.detectChanges();
     const plot = fixture.debugElement.query(By.directive(TimeSeriesPlotComponent))
       .componentInstance as TimeSeriesPlotComponent;
-    expect(plot.follow()).toBeFalse();
-    expect(TestBed.inject(PredictionTracesSettingsService).followPlayback()).toBeFalse();
+    expect(plot.follow()).toBeTrue();
+    expect(TestBed.inject(PredictionTracesSettingsService).followPlayback()).toBeTrue();
   });
 
   it('keeps the choices across a page reload', async () => {

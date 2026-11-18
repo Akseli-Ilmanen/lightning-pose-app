@@ -427,7 +427,16 @@ export class SessionService {
   }
 
   private async initKeypoints() {
-    /** Gets the list of keypoints from the first CSV file */
+    /**
+     * The project's keypoints. Models may predict a subset (e.g. a landmark-only
+     * model), so the first CSV file is only the fallback.
+     */
+    const projectKeypoints =
+      this.projectInfoService.projectInfo?.keypoint_names ?? [];
+    if (projectKeypoints.length > 0) {
+      this.projectInfoService.setAllKeypoints(projectKeypoints);
+      return;
+    }
     if (this.predictionFiles.length === 0) return;
 
     const csvFile = await this.getPredictionFile(this.predictionFiles[0]);

@@ -1,18 +1,50 @@
 <div class="flex flex-col text-xs">
   <!-- Toolbar: what this row plots -->
   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-2 py-1">
-    @if (sources().length > 1) {
+    @if (models().length > 1) {
       <select
         class="select select-xs w-auto rounded-sm"
-        aria-label="Predictions to plot"
-        (change)="onSourceChange($any($event.target).value)"
+        aria-label="Model to plot"
+        (change)="onModelChange($any($event.target).value)"
       >
-        @for (s of sources(); track s.key) {
-          <option [value]="s.key" [selected]="s.key === sourceKey()">
-            {{ s.modelKey }} · {{ s.viewName }}
-          </option>
+        @for (m of models(); track m) {
+          <option [value]="m" [selected]="m === modelKey()">{{ m }}</option>
         }
       </select>
+    }
+
+    @if (views().length > 1) {
+      <details class="dropdown">
+        <summary
+          class="select select-xs w-auto rounded-sm list-none"
+          aria-label="Views to plot"
+        >
+          {{ viewMenuLabel() }}
+        </summary>
+        <div
+          class="dropdown-content z-50 mt-1 w-52 max-h-72 overflow-y-auto rounded-sm border border-base-content/20 bg-base-200 p-1 shadow-lg"
+        >
+          <div class="flex gap-1 px-1 pb-1 border-b border-base-content/10 mb-1">
+            <button type="button" class="btn btn-xs btn-ghost rounded-sm" aria-label="Plot all views" (click)="selectAllViews(true)">All</button>
+            <button type="button" class="btn btn-xs btn-ghost rounded-sm" aria-label="Plot no views" (click)="selectAllViews(false)">None</button>
+          </div>
+          @for (v of views(); track v) {
+            <label class="flex items-center gap-2 px-1 py-0.5 rounded-sm hover:bg-base-content/10 cursor-pointer">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-xs rounded-sm"
+                [attr.aria-label]="'Plot view ' + v"
+                [checked]="isViewSelected(v)"
+                (change)="toggleView(v, $any($event.target).checked)"
+              />
+              @if (colorBy() === 'view' && mode() === 'lines') {
+                <span class="inline-block h-0.5 w-3" [style.background]="viewColor(v)"></span>
+              }
+              <span class="truncate">{{ v }}</span>
+            </label>
+          }
+        </div>
+      </details>
     }
 
     <select
@@ -52,8 +84,8 @@
           class="dropdown-content z-50 mt-1 w-52 max-h-72 overflow-y-auto rounded-sm border border-base-content/20 bg-base-200 p-1 shadow-lg"
         >
           <div class="flex gap-1 px-1 pb-1 border-b border-base-content/10 mb-1">
-            <button type="button" class="btn btn-xs btn-ghost rounded-sm" (click)="selectAllKeypoints(true)">All</button>
-            <button type="button" class="btn btn-xs btn-ghost rounded-sm" (click)="selectAllKeypoints(false)">None</button>
+            <button type="button" class="btn btn-xs btn-ghost rounded-sm" aria-label="Plot all keypoints" (click)="selectAllKeypoints(true)">All</button>
+            <button type="button" class="btn btn-xs btn-ghost rounded-sm" aria-label="Plot no keypoints" (click)="selectAllKeypoints(false)">None</button>
           </div>
           @for (kp of keypointChoices(); track kp) {
             <label class="flex items-center gap-2 px-1 py-0.5 rounded-sm hover:bg-base-content/10 cursor-pointer">
@@ -64,7 +96,9 @@
                 [checked]="isKeypointSelected(kp)"
                 (change)="toggleKeypoint(kp, $any($event.target).checked)"
               />
-              <span class="inline-block h-0.5 w-3" [style.background]="keypointColor(kp)"></span>
+              @if (colorBy() === 'keypoint') {
+                <span class="inline-block h-0.5 w-3" [style.background]="keypointColor(kp)"></span>
+              }
               <span class="truncate">{{ kp }}</span>
             </label>
           }
@@ -114,19 +148,6 @@
           </label>
         }
       }
-      <label
-        class="flex items-center gap-1 cursor-pointer"
-        [title]="'Drop positions with likelihood below ' + (likelihoodThreshold() * 100).toFixed(0) + '% (View options) before computing.'"
-      >
-        <input
-          type="checkbox"
-          class="checkbox checkbox-xs rounded-sm"
-          aria-label="Mask low confidence"
-          [checked]="maskLowConfidence()"
-          (change)="onMaskChange($any($event.target).checked)"
-        />
-        <span class="opacity-80">mask &lt; {{ (likelihoodThreshold() * 100).toFixed(0) }}%</span>
-      </label>
       @if (isStale() && !loading()) {
         <button type="button" class="btn btn-xs rounded-sm" (click)="plot()">Update</button>
       }
@@ -144,6 +165,19 @@
       <span class="loading loading-spinner loading-xs" aria-label="Computing"></span>
     }
     @if (mode() === 'lines') {
+      <label
+        class="flex items-center gap-1 cursor-pointer"
+        [title]="'Drop positions with likelihood below ' + (likelihoodThreshold() * 100).toFixed(0) + '% (View options): they leave a gap in the trace.'"
+      >
+        <input
+          type="checkbox"
+          class="checkbox checkbox-xs rounded-sm"
+          aria-label="Mask low confidence"
+          [checked]="maskLowConfidence()"
+          (change)="onMaskChange($any($event.target).checked)"
+        />
+        <span class="opacity-80">mask &lt; {{ (likelihoodThreshold() * 100).toFixed(0) }}%</span>
+      </label>
       <span class="flex items-center gap-1" role="group" aria-label="Value axis range">
         <span class="opacity-60">y</span>
         <input
