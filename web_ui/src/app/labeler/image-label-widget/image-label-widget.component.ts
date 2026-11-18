@@ -67,6 +67,22 @@ export class ImageLabelWidgetComponent {
   visibleKeypoints = input<string[] | null>(null);
   /** Epipolar lines and the other views' point, drawn in image pixels. */
   epipolarGuides = input<EpipolarGuides | null>(null);
+  /**
+   * Lines between the labels of a rigid group, in image pixels (label audit). `off`: the 3D
+   * distance of the pair is longer ('long') or shorter ('short') than usual, or null;
+   * `main`: the pair contains the selected keypoint.
+   */
+  shapeLines = input<
+    {
+      name: string;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      off: 'long' | 'short' | null;
+      main: boolean;
+    }[]
+  >([]);
   /** View names of the frame, so each source view keeps its line color. */
   guideViews = input<string[]>([]);
 

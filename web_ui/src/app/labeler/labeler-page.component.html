@@ -187,8 +187,6 @@
         [visibleKeypoints]="audit.visibleKeypoints()"
         [auditOnlyFlagged]="audit.onlyFlaggedKeypoints()"
         (auditOnlyFlaggedChange)="audit.onlyFlaggedKeypoints.set($event)"
-        (auditNext)="audit.next()"
-        (auditPrevious)="audit.previous()"
         (auditExit)="audit.stopReview()"
         (saved)="handleSaved($event)"
         (savingChange)="isSaving.set($event)"

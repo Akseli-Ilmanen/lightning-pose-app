@@ -201,6 +201,9 @@ export class LabelerPageComponent implements OnInit, OnChanges {
   });
 
   protected hasNextFrame = computed(() => {
+    // Reviewing the label audit: Next goes to the next likely mistake.
+    const focus = this.audit.focus();
+    if (focus) return focus.index < focus.total - 1;
     const frames = this.labelFileData();
     const frameKey = this.frameKey();
     if (!frames || frameKey == null) return false;
@@ -209,6 +212,8 @@ export class LabelerPageComponent implements OnInit, OnChanges {
   });
 
   protected hasPreviousFrame = computed(() => {
+    const focus = this.audit.focus();
+    if (focus) return focus.index > 0;
     const frames = this.labelFileData();
     const frameKey = this.frameKey();
     if (!frames || frameKey == null) return false;
@@ -279,6 +284,10 @@ export class LabelerPageComponent implements OnInit, OnChanges {
         });
       }
     });
+    if (data.shouldAdvanceFrame && !data.deletion && this.audit.isReviewing()) {
+      this.audit.next();
+      return;
+    }
     if (data.shouldAdvanceFrame || data.deletion) {
       const frames = this.labelFileData()!;
       let nextFrameKey: string | undefined;
@@ -307,10 +316,18 @@ export class LabelerPageComponent implements OnInit, OnChanges {
   }
 
   protected handleNextFrame() {
+    if (this.audit.isReviewing()) {
+      this.audit.next();
+      return;
+    }
     this.openFrameAtOffset(1);
   }
 
   protected handlePreviousFrame() {
+    if (this.audit.isReviewing()) {
+      this.audit.previous();
+      return;
+    }
     this.openFrameAtOffset(-1);
   }
 

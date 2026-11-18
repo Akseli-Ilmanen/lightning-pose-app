@@ -52,7 +52,10 @@ import { RpcService } from '../../rpc.service';
 import {
   AuditFocus,
   EpipolarGuides,
+  ShapeGuides,
+  ShapePair,
 } from '../label-audit/label-audit.model';
+import { LabelAuditService } from '../label-audit/label-audit.service';
 import { guideColor } from '../label-audit/guide-colors';
 
 @Component({
@@ -116,9 +119,13 @@ export class LabelerCenterPanelComponent implements OnChanges {
   visibleKeypoints = input<string[] | null>(null);
   auditOnlyFlagged = input(true);
   auditOnlyFlaggedChange = output<boolean>();
-  auditNext = output<void>();
-  auditPrevious = output<void>();
   auditExit = output<void>();
+
+  /** The keypoint can be selected and edited (reviewing with "Only flagged": only the flagged ones). */
+  protected isEditableKeypoint(name: string): boolean {
+    const only = this.auditFocus() ? this.visibleKeypoints() : null;
+    return !only || only.includes(name);
+  }
 
   /** Keypoints drawn in the main image: the review's ones plus the selected one. */
   protected shownKeypoints = computed((): string[] | null => {
@@ -145,6 +152,126 @@ export class LabelerCenterPanelComponent implements OnChanges {
     () => this.allEpipolarGuides()?.lines.filter((l) => l.segments.length).length ?? 0,
   );
   private epipolarRequest = 0;
+  /** The finding (index and frame) whose view and keypoint were last selected for review. */
+  private appliedFocus: string | null = null;
+
+  /**
+   * How far the selected keypoint's label is from each other view's line, in pixels of
+   * the shown view. Follows every edit, so the user sees at once whether the views agree now.
+   */
+  protected lineDistances = computed(() => {
+    this.cacheBuster(); // a keypoint moved
+    const guides = this.allEpipolarGuides();
+    const focus = this.auditFocus();
+    const frame = this.frame();
+    const keypoint = this.selectedKeypoint();
+    if (!guides || !focus || !frame || !keypoint) return [];
+    const own = this.labelsOf(frame, keypoint).find((l) => l.view === this.selectedView());
+    if (!own) return [];
+    const tolerance = focus.finding.kind === 'shape' ? null : focus.finding.tolerancePx;
+    return guides.lines
+      .filter((l) => l.segments.length)
+      .map((l) => {
+        const px = distanceToPolylines(own, l.segments);
+        return { view: l.fromView, px, ok: tolerance === null ? null : px <= tolerance };
+      })
+      .filter((d) => Number.isFinite(d.px));
+  });
+
+  /** The rigid group measured with the labels on screen, for the finding and frame of `key`. */
+  private liveShape = signal<{ key: string; guides: ShapeGuides } | null>(null);
+  private shapeRequest = 0;
+  private shapeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Edit counter value when the reviewed finding opened: no refit before the first edit. */
+  private shapeOpened: { key: string; buster: number } | null = null;
+  private auditService = inject(LabelAuditService, { optional: true });
+
+  private shapeKey = computed(() => {
+    const focus = this.auditFocus();
+    const frame = this.frame();
+    if (!focus || focus.finding.kind !== 'shape' || !frame) return null;
+    return frame.key === focus.finding.frameKey ? `${focus.index}|${frame.key}` : null;
+  });
+  private currentShape = computed(() => {
+    const live = this.liveShape();
+    return live && live.key === this.shapeKey() ? live.guides : null;
+  });
+  /** True while the distances are being measured again after an edit. */
+  protected shapeRefitting = signal(false);
+
+  /** The pairs of the reviewed rigid group: of the last check, or measured again after an edit. */
+  protected shapePairs = computed<ShapePair[]>(() => {
+    const finding = this.auditFocus()?.finding;
+    if (!finding || finding.kind !== 'shape') return [];
+    return this.currentShape()?.groupPairs ?? finding.groupPairs ?? [];
+  });
+
+  /**
+   * Reviewing a rigid-group finding: a line per measured pair between its two labels in the
+   * shown view. The ends follow the labels at once; the color follows the next measurement.
+   */
+  protected shapeLines = computed(() => {
+    this.cacheBuster(); // a keypoint moved
+    const frame = this.frame();
+    const pairs = this.shapePairs();
+    if (!frame || !pairs.length) return [];
+    const view = this.selectedView();
+    const selected = this.selectedKeypoint();
+    const at = (kp: string) => this.labelsOf(frame, kp).find((l) => l.view === view);
+    return pairs.flatMap((p) => {
+      const a = at(p.a);
+      const b = at(p.b);
+      if (p.distance === null || !a || !b) return [];
+      return [
+        {
+          name: `${p.a}|${p.b}`,
+          x1: a.x,
+          y1: a.y,
+          x2: b.x,
+          y2: b.y,
+          off: !p.off ? null : p.distance > p.usual ? ('long' as const) : ('short' as const),
+          main: p.a === selected || p.b === selected,
+        },
+      ];
+    });
+  });
+
+  /** The measured distances of a keypoint to the rest of its group, and which are off. */
+  private pairsOf(keypoint: string) {
+    const own = this.shapePairs()
+      .filter((p) => (p.a === keypoint || p.b === keypoint) && p.distance !== null)
+      .map((p) => ({
+        other: p.a === keypoint ? p.b : p.a,
+        long: p.distance! > p.usual,
+        percent: (100 * p.distance!) / p.usual,
+        off: p.off,
+      }));
+    return { keypoint, measured: own.length, off: own.filter((p) => p.off) };
+  }
+
+  /** The selected keypoint's distances; follows every edit. */
+  protected shapeReadout = computed(() => {
+    const keypoint = this.selectedKeypoint();
+    return keypoint && this.shapePairs().length ? this.pairsOf(keypoint) : null;
+  });
+
+  /** The flagged keypoint's distances, for the review bar; follows every edit. */
+  protected shapeFlagged = computed(() => {
+    const finding = this.auditFocus()?.finding;
+    return finding?.kind === 'shape' && this.shapePairs().length
+      ? this.pairsOf(finding.keypoint)
+      : null;
+  });
+
+  /** For the review bar: the selected keypoint's distances, else the flagged keypoint's. */
+  protected shapeStatus = computed(() => this.shapeReadout() ?? this.shapeFlagged());
+
+  protected readonly shapeColor = (long: boolean) => (long ? '#ef4444' : '#38bdf8');
+
+  /** Three significant digits: distances are in calibration units of unknown size. */
+  protected sig(x: number | null): string {
+    return x === null ? '' : Number(x.toPrecision(3)).toString();
+  }
   private rpc = inject(RpcService);
   protected readonly guideColor = guideColor;
 
@@ -168,13 +295,8 @@ export class LabelerCenterPanelComponent implements OnChanges {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target as HTMLElement | null;
     if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-    if (event.key === 'n') {
-      event.preventDefault();
-      this.auditNext.emit();
-    } else if (event.key === 'p') {
-      event.preventDefault();
-      this.auditPrevious.emit();
-    } else if (event.key === 'Escape') {
+    // Stepping is done with Back / Next / Save and next, so an edit is not left unsaved.
+    if (event.key === 'Escape') {
       this.auditExit.emit();
     }
   }
@@ -243,10 +365,64 @@ export class LabelerCenterPanelComponent implements OnChanges {
     effect(() => {
       const focus = this.auditFocus();
       const frame = this.frame();
+      if (!focus) this.appliedFocus = null;
       if (!focus || !frame || frame.key !== focus.finding.frameKey) return;
+      // Once per finding: a save replaces the frame object and must not undo a view the user chose.
+      const key = focus.index + '|' + frame.key;
+      if (key === this.appliedFocus) return;
+      this.appliedFocus = key;
       untracked(() => {
         this._selectedView.set(focus.finding.view);
         this.selectedKeypoint.set(focus.finding.keypoint);
+      });
+    });
+
+    // Reviewing with "Only flagged": the selection stays on the flagged keypoint (or its
+    // swap partner), whatever else would move it: placing a label, changing view, a new frame.
+    effect(() => {
+      const only = this.visibleKeypoints();
+      const focus = this.auditFocus();
+      const frame = this.frame();
+      const selected = this.selectedKeypoint();
+      if (!only || !focus || !frame || frame.key !== focus.finding.frameKey) return;
+      if (selected && only.includes(selected)) return;
+      untracked(() => this.selectedKeypoint.set(focus.finding.keypoint));
+    });
+
+    // The group's distances follow the edits: measured again after every edit, with the
+    // unsaved labels.
+    effect(() => {
+      const buster = this.cacheBuster(); // a keypoint moved
+      const key = this.shapeKey();
+      const frame = this.frame();
+      const focus = this.auditFocus();
+      untracked(() => {
+        if (this.shapeTimer) clearTimeout(this.shapeTimer);
+        const service = this.auditService;
+        if (!key || !frame || !focus || !service) {
+          this.shapeOpened = null;
+          this.shapeRefitting.set(false);
+          return;
+        }
+        if (this.shapeOpened?.key !== key) {
+          this.shapeOpened = { key, buster };
+          this.shapeRefitting.set(false);
+          return;
+        }
+        if (this.shapeOpened.buster === buster) return;
+        const request = ++this.shapeRequest;
+        this.shapeRefitting.set(true);
+        this.shapeTimer = setTimeout(async () => {
+          try {
+            const guides = await service.shapeGuides(frame, focus.finding.keypoint);
+            if (request === this.shapeRequest && guides) this.liveShape.set({ key, guides });
+          } catch (e) {
+            // The distances of the last check stay: a help, not essential.
+            console.error('Shape refit failed', e);
+          } finally {
+            if (request === this.shapeRequest) this.shapeRefitting.set(false);
+          }
+        }, 0); // at once, as the epipolar guides; newer edits supersede older requests
       });
     });
 
@@ -529,6 +705,9 @@ export class LabelerCenterPanelComponent implements OnChanges {
     const frame = this.frame();
     const frameView = this.selectedFrameView();
     if (!frame || !frameView) return null;
+    // Reviewing the label audit: Back / Next / Save and next go from one likely mistake
+    // to the next, not through the views of the frame (the filmstrip still switches view).
+    if (this.auditFocus()) return null;
     return frame.views[frame.views.indexOf(frameView) + offset] ?? null;
   }
 
@@ -584,17 +763,26 @@ export class LabelerCenterPanelComponent implements OnChanges {
 
   protected saveAndNextDisabledReason = computed(() => {
     if (!this.isSaveAndNextDisabled()) return '';
-    return this.saveDisabledReason() || 'Already on the last view of the last frame.';
+    return (
+      this.saveDisabledReason() ||
+      (this.auditFocus() ? 'This is the last flagged label.' : 'Already on the last view of the last frame.')
+    );
   });
 
   protected backDisabledReason = computed(() => {
     if (!this.isBackDisabled()) return '';
-    return this.busyReason() || 'Already on the first view of the first frame.';
+    return (
+      this.busyReason() ||
+      (this.auditFocus() ? 'This is the first flagged label.' : 'Already on the first view of the first frame.')
+    );
   });
 
   protected nextDisabledReason = computed(() => {
     if (!this.isNextDisabled()) return '';
-    return this.busyReason() || 'Already on the last view of the last frame.';
+    return (
+      this.busyReason() ||
+      (this.auditFocus() ? 'This is the last flagged label.' : 'Already on the last view of the last frame.')
+    );
   });
 
   protected revertDisabledReason = computed(() => {
@@ -751,4 +939,24 @@ export class LabelerCenterPanelComponent implements OnChanges {
     this.deleteConfirmationDialog()!.nativeElement.close();
     this.deletionShouldContinue.next(shouldContinue);
   }
+}
+
+/** Smallest distance from a point to a set of polylines (Infinity when there is none). */
+export function distanceToPolylines(
+  p: { x: number; y: number },
+  polylines: { x: number; y: number }[][],
+): number {
+  let best = Infinity;
+  for (const line of polylines) {
+    for (let i = 0; i + 1 < line.length; i++) {
+      const a = line[i];
+      const b = line[i + 1];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+      best = Math.min(best, Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)));
+    }
+  }
+  return best;
 }

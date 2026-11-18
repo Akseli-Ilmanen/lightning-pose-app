@@ -6,10 +6,38 @@ import { MVFrame } from '../frame.model';
 import {
   AuditFinding,
   AuditFocus,
+  AuditMode,
   GetLabelAuditResponse,
+  ShapeGuides,
 } from './label-audit.model';
 
 export const DEFAULT_AUDIT_TOLERANCE_PX = 5;
+const CHOICES_KEY = 'label-audit.keypoints';
+export const MAX_RIGID_GROUPS = 4;
+export const DEFAULT_SHAPE_STRICTNESS = 3;
+
+/** Which keypoints the audit reports, and which rigid group (1..) each belongs to. */
+export interface AuditKeypointChoices {
+  /** Keypoints left out of the findings; every other keypoint is checked. */
+  unchecked: string[];
+  /** Rigid group number per keypoint; absent or 0 = none. */
+  groups: Record<string, number>;
+}
+
+/** Keypoints of each rigid group, groups in number order, names in `names` order. */
+export function rigidGroupsOf(groups: Record<string, number>, names: string[]): string[][] {
+  const byGroup = new Map<number, string[]>();
+  for (const name of names) {
+    const g = groups[name] ?? 0;
+    if (g > 0) byGroup.set(g, [...(byGroup.get(g) ?? []), name]);
+  }
+  return [...byGroup.entries()].sort((a, b) => a[0] - b[0]).map(([, kps]) => kps);
+}
+
+/** Keypoint names of the label file, from its first frame. */
+export function keypointNamesOf(frames: MVFrame[]): string[] {
+  return frames[0]?.views[0]?.keypoints.map((k) => k.keypointName) ?? [];
+}
 
 /**
  * Label audit state for one Labeler page (#207): the findings of the last run
@@ -21,11 +49,35 @@ export class LabelAuditService {
   private projectInfoService = inject(ProjectInfoService);
 
   readonly tolerancePx = signal(DEFAULT_AUDIT_TOLERANCE_PX);
+  /** Keypoints to report and their rigid groups. Remembered per project. */
+  readonly choices = signal<AuditKeypointChoices>(this.storedChoices());
   readonly isRunning = signal(false);
   readonly error = signal<string | null>(null);
   /** Label file key the findings belong to; null before the first run. */
   readonly auditedLabelFileKey = signal<string | null>(null);
-  readonly findings = signal<AuditFinding[]>([]);
+  /** Findings of both audits, as the last check returned them. */
+  readonly allFindings = signal<AuditFinding[]>([]);
+  /** The audit shown: its settings, findings and review. */
+  readonly mode = signal<AuditMode>('views');
+  /** Shape check: a distance this many spreads from its usual value counts as off. */
+  readonly shapeStrictness = signal(DEFAULT_SHAPE_STRICTNESS);
+  /**
+   * Distances check: names of the animals as they occur in the session names, comma
+   * separated. Each gets its own distances. Remembered per project.
+   */
+  readonly animals = signal(this.storedAnimals());
+  readonly animalNames = computed(() =>
+    this.animals()
+      .split(',')
+      .map((a) => a.trim())
+      .filter((a) => a.length > 0),
+  );
+  readonly viewsCount = computed(() => this.allFindings().filter((f) => f.kind !== 'shape').length);
+  readonly shapeCount = computed(() => this.allFindings().filter((f) => f.kind === 'shape').length);
+  /** Findings of the shown audit; the review steps through these. */
+  readonly findings = computed(() =>
+    this.allFindings().filter((f) => (f.kind === 'shape') === (this.mode() === 'shape')),
+  );
   readonly summary = signal<Omit<GetLabelAuditResponse, 'items'> | null>(null);
   /** Findings whose frame is not in the loaded label file (should not happen). */
   readonly unmatched = signal(0);
@@ -50,6 +102,8 @@ export class LabelAuditService {
   readonly visibleKeypoints = computed((): string[] | null => {
     const f = this.focus()?.finding;
     if (!f || !this.onlyFlaggedKeypoints()) return null;
+    // A rigid group is judged as a whole: any of its labels may be the wrong one.
+    if (f.kind === 'shape' && f.group?.length) return f.group;
     return f.partner ? [f.keypoint, f.partner] : [f.keypoint];
   });
 
@@ -59,6 +113,10 @@ export class LabelAuditService {
     this.isRunning.set(true);
     this.error.set(null);
     this.stopReview();
+    this.lastRun = { labelFile, names: keypointNamesOf(frames) };
+    const names = keypointNamesOf(frames);
+    const { unchecked, groups } = this.choices();
+    const checked = names.filter((n) => !unchecked.includes(n));
     try {
       const response = (await this.rpc.call('getLabelAudit', {
         projectKey,
@@ -67,15 +125,19 @@ export class LabelAuditService {
           csvPath: v.csvPath,
         })),
         defaultTolerancePx: this.tolerancePx(),
+        rigidGroups: rigidGroupsOf(groups, names),
+        keypoints: checked.length === names.length ? null : checked,
+        shapeStrictness: this.shapeStrictness(),
+        animals: this.animalNames(),
       })) as GetLabelAuditResponse;
       const { items, ...summary } = response;
       const findings = matchFindingsToFrames(items, frames);
-      this.findings.set(findings);
+      this.allFindings.set(findings);
       this.unmatched.set(items.length - findings.length);
       this.summary.set(summary);
       this.auditedLabelFileKey.set(labelFile.key);
     } catch (e) {
-      this.findings.set([]);
+      this.allFindings.set([]);
       this.summary.set(null);
       this.error.set(errorText(e));
     } finally {
@@ -83,10 +145,117 @@ export class LabelAuditService {
     }
   }
 
+  /** The label file and keypoints of the last check, for refitting a frame during the review. */
+  private lastRun: { labelFile: MVLabelFile; names: string[] } | null = null;
+
+  /**
+   * The rigid group of `keypoint` refitted to the frame's labels as they are on screen,
+   * unsaved edits included. Null when there is nothing to fit.
+   */
+  async shapeGuides(frame: MVFrame, keypoint: string): Promise<ShapeGuides | null> {
+    const projectKey = this.projectInfoService.projectContext()?.key;
+    const last = this.lastRun;
+    if (!projectKey || !last) return null;
+    const labels: Record<string, Record<string, [number, number] | null>> = {};
+    const imgPaths: Record<string, string> = {};
+    for (const view of frame.views) {
+      imgPaths[view.viewName] = view.imgPath;
+      labels[view.viewName] = {};
+      for (const k of view.keypoints) {
+        labels[view.viewName][k.keypointName] =
+          Number.isFinite(k.x) && Number.isFinite(k.y) ? [k.x, k.y] : null;
+      }
+    }
+    const guides = (await this.rpc.call('getShapeGuides', {
+      projectKey,
+      views: last.labelFile.views.map((v) => ({ viewName: v.viewName, csvPath: v.csvPath })),
+      defaultTolerancePx: this.tolerancePx(),
+      rigidGroups: rigidGroupsOf(this.choices().groups, last.names),
+      shapeStrictness: this.shapeStrictness(),
+      animals: this.animalNames(),
+      imgPaths,
+      labels,
+      keypoint,
+    })) as ShapeGuides;
+    return guides.group.length ? guides : null;
+  }
+
+  setMode(mode: AuditMode) {
+    if (mode === this.mode()) return;
+    this.stopReview();
+    this.mode.set(mode);
+  }
+
+  isChecked(name: string): boolean {
+    return !this.choices().unchecked.includes(name);
+  }
+
+  setChecked(names: string[], on: boolean) {
+    const rest = this.choices().unchecked.filter((n) => !names.includes(n));
+    this.setChoices({ ...this.choices(), unchecked: on ? rest : [...rest, ...names] });
+  }
+
+  groupOf(name: string): number {
+    return this.choices().groups[name] ?? 0;
+  }
+
+  setGroup(name: string, group: number) {
+    const groups = { ...this.choices().groups };
+    if (group > 0) groups[name] = group;
+    else delete groups[name];
+    this.setChoices({ ...this.choices(), groups });
+  }
+
+  private setChoices(choices: AuditKeypointChoices) {
+    this.choices.set(choices);
+    try {
+      localStorage.setItem(this.choicesStorageKey(), JSON.stringify(choices));
+    } catch {
+      // Storage is a convenience only.
+    }
+  }
+
+  setAnimals(text: string) {
+    this.animals.set(text);
+    try {
+      localStorage.setItem(this.animalsStorageKey(), text);
+    } catch {
+      // Storage is a convenience only.
+    }
+  }
+
+  private animalsStorageKey(): string {
+    return `label-audit.animals.${this.projectInfoService.projectContext()?.key ?? ''}`;
+  }
+
+  private storedAnimals(): string {
+    try {
+      return localStorage.getItem(this.animalsStorageKey()) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  private choicesStorageKey(): string {
+    return `${CHOICES_KEY}.${this.projectInfoService.projectContext()?.key ?? ''}`;
+  }
+
+  private storedChoices(): AuditKeypointChoices {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.choicesStorageKey()) ?? 'null');
+      if (raw && Array.isArray(raw.unchecked) && raw.groups && typeof raw.groups === 'object') {
+        return { unchecked: raw.unchecked.map(String), groups: raw.groups };
+      }
+    } catch {
+      // fall through to the default
+    }
+    return { unchecked: [], groups: {} };
+  }
+
   /** Forget the findings, for example when another label file opens. */
   clear() {
     this.stopReview();
-    this.findings.set([]);
+    this.allFindings.set([]);
     this.summary.set(null);
     this.error.set(null);
     this.unmatched.set(0);

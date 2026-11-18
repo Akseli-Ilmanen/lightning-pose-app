@@ -26,12 +26,55 @@
             class="alert alert-soft py-2 px-3 mb-2 flex flex-wrap items-center gap-2 text-sm"
             [class.alert-warning]="finding.kind === 'swap'"
             [class.alert-info]="finding.kind === 'multiview'"
+            [class.alert-accent]="finding.kind === 'shape'"
             [style.max-width.px]="viewOptions.imageSizePx()"
           >
             <span class="font-semibold">
               Likely mistake {{ focus.index + 1 }} / {{ focus.total }}
             </span>
-            <span class="grow min-w-0">{{ finding.reason }}</span>
+            @if (shapeStatus(); as r) {
+              <span class="grow min-w-0 flex flex-wrap gap-x-3" data-testid="audit-shape-reason">
+                @for (p of r.off; track p.other) {
+                  <span class="font-semibold" [style.color]="shapeColor(p.long)"
+                    >{{ r.keypoint }} to {{ p.other }} {{ p.long ? 'too long' : 'too short' }} ({{
+                      p.percent | number: '1.0-0'
+                    }}% of usual)</span
+                  >
+                } @empty {
+                  <span class="font-semibold" [class.text-success]="r.measured > 0"
+                    >{{ r.keypoint }}:
+                    {{
+                      r.measured
+                        ? 'all distances as usual ✓'
+                        : 'needs labels in 2 views that agree'
+                    }}</span
+                  >
+                }
+                @if (shapeRefitting()) {
+                  <span class="opacity-70" data-testid="shape-refit-state">measuring…</span>
+                }
+              </span>
+            } @else {
+              <span class="grow min-w-0 flex flex-wrap gap-x-3">
+                <span>{{ finding.reason }}</span>
+                @for (d of lineDistances(); track d.view) {
+                  <span
+                    data-testid="line-distance"
+                    class="font-semibold"
+                    [class.text-success]="d.ok === true"
+                    [class.text-warning]="d.ok === false"
+                    >{{ d.px | number: "1.0-1" }} px from the {{ d.view }} line{{
+                      d.ok === true ? " ✓" : ""
+                    }}</span
+                  >
+                }
+              </span>
+            }
+            <span class="text-xs opacity-70 basis-full" data-testid="audit-step-hint">
+              <b>Next</b>: next flagged label · <b>Back</b>: previous flagged label ·
+              <b>Save and next</b>: save, then next flagged label · other camera: click it in
+              the filmstrip below
+            </span>
             <label class="flex items-center gap-1 text-xs cursor-pointer">
               <input
                 type="checkbox"
@@ -68,26 +111,6 @@
               </span>
             }
             <span class="flex gap-1">
-              <button
-                type="button"
-                class="btn btn-xs btn-soft tooltip tooltip-bottom"
-                data-tip="Previous likely mistake (p)"
-                aria-label="Previous likely mistake"
-                [disabled]="focus.index === 0"
-                (click)="auditPrevious.emit()"
-              >
-                <span class="material-icons text-sm!">chevron_left</span>
-              </button>
-              <button
-                type="button"
-                class="btn btn-xs btn-soft tooltip tooltip-bottom"
-                data-tip="Next likely mistake (n)"
-                aria-label="Next likely mistake"
-                [disabled]="focus.index >= focus.total - 1"
-                (click)="auditNext.emit()"
-              >
-                <span class="material-icons text-sm!">chevron_right</span>
-              </button>
               <button
                 type="button"
                 class="btn btn-xs btn-soft tooltip tooltip-bottom"
@@ -142,35 +165,53 @@
             [disableInteractions]="disableInteractions()"
             [visibleKeypoints]="shownKeypoints()"
             [epipolarGuides]="epipolarGuides()"
+            [shapeLines]="shapeLines()"
             [guideViews]="guideViews()"
             (keypointUpdated)="
               handleKeypointUpdated($event.kp, $event.position, fv)
             "
           ></app-image-label-widget>
         </div>
-        @if (guideLegend().length) {
+        @if (shapePairs().length || guideLegend().length) {
           <div
-            class="px-2 py-1 text-xs flex flex-wrap items-center gap-x-3 gap-y-1 opacity-80"
-            data-testid="epipolar-legend"
+            class="px-2 py-0.5 text-xs flex flex-wrap items-center gap-x-3 opacity-70"
+            data-testid="guide-legend"
             [style.max-width.px]="viewOptions.imageSizePx()"
           >
-            <span>
-              {{ selectedKeypoint() }} must lie on the line of each view
-              @if (epipolarLineCount() > guideLegend().length) {
-                ({{ guideLegend().length }} of {{ epipolarLineCount() }}, steepest crossings)
-              }:
-            </span>
+            @if (shapePairs().length) {
+              <span class="flex items-center gap-1" data-testid="shape-legend">
+                <span class="inline-block w-4 border-t-2" style="border-color: #ef4444"></span>
+                too long
+                <span class="inline-block w-4 border-t-2 ml-2" style="border-color: #38bdf8"></span>
+                too short
+                <span class="inline-block w-4 border-t border-dotted ml-2"></span>
+                as usual
+              </span>
+            }
             @for (item of guideLegend(); track item.view) {
-              <span class="flex items-center gap-1">
+              <span class="flex items-center gap-1" data-testid="epipolar-legend">
                 <span
                   class="inline-block w-4 border-t-2 border-dashed"
                   [style.border-color]="item.color"
                 ></span>
-                {{ item.view }}
+                {{ item.view }} line
               </span>
             }
-            @if (epipolarGuides()?.predictedPoint) {
-              <span>✕ = where those views put it</span>
+            @if (guideLegend().length && epipolarGuides()?.predictedPoint) {
+              <span>✕ other views' point</span>
+            }
+            @if (!auditFocus()) {
+              @for (d of lineDistances(); track d.view) {
+                <span
+                  data-testid="line-distance"
+                  class="font-semibold"
+                  [class.text-success]="d.ok === true"
+                  [class.text-warning]="d.ok === false"
+                  >{{ d.px | number: "1.0-1" }} px from the {{ d.view }} line{{
+                    d.ok === true ? " ✓" : ""
+                  }}</span
+                >
+              }
             }
           </div>
         }
@@ -255,7 +296,7 @@
             type="button"
             class="btn btn-error btn-soft btn-xs"
             aria-label="Clear values in this view"
-            [disabled]="!canClearView()"
+            [disabled]="!canClearView() || (!!auditFocus() && !!visibleKeypoints())"
             (click)="handleClearView()"
           >
             <span class="material-icons text-sm!">close</span>
@@ -267,6 +308,7 @@
         @if (selectedFrameView(); as fv) {
           <ul>
             @for (kp of fv.keypoints; track $index) {
+              @if (isEditableKeypoint(kp.keypointName)) {
               <li
                 class="p-1 flex justify-between items-center group {{
                   kp.keypointName === selectedKeypoint()
@@ -290,6 +332,7 @@
                   </button>
                 </span>
               </li>
+              }
             }
           </ul>
         }

@@ -35,6 +35,30 @@
         class="absolute top-0 left-0 h-full w-full"
       ></app-keypoint-container>
     }
+    @if (!viewOptions.isShowingTemporalContext() && shapeLines().length) {
+      <!-- Distances of the reviewed rigid group: red = too long, blue = too short, thin dotted = as usual. Never clickable. -->
+      <svg
+        class="absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
+        data-testid="shape-lines"
+        aria-hidden="true"
+      >
+        @for (sl of shapeLines(); track sl.name) {
+          <line
+            [attr.data-shape-pair]="sl.name"
+            [attr.data-off]="sl.off"
+            [attr.x1]="sl.x1"
+            [attr.y1]="sl.y1"
+            [attr.x2]="sl.x2"
+            [attr.y2]="sl.y2"
+            [attr.stroke]="sl.off === 'long' ? '#ef4444' : sl.off === 'short' ? '#38bdf8' : 'white'"
+            [attr.stroke-width]="sl.off ? (sl.main ? 1.5 : 1) : 0.75"
+            [attr.stroke-dasharray]="sl.off ? null : '1 4'"
+            [attr.opacity]="sl.off ? (sl.main ? 1 : 0.75) : sl.main ? 0.6 : 0.35"
+            vector-effect="non-scaling-stroke"
+          />
+        }
+      </svg>
+    }
     @if (!viewOptions.isShowingTemporalContext() && epipolarGuides(); as guides) {
       <!-- Epipolar guides in image pixels, under the pointer so clicks still place keypoints. -->
       <svg

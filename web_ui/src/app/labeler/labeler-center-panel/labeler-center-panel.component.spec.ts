@@ -914,32 +914,18 @@ describe('LabelerCenterPanelComponent label audit review', () => {
     expect(mainWidget().visibleKeypoints()).toEqual(['leftEar', 'rightEar']);
   });
 
-  it('steps with the buttons and with n / p, and Esc stops', () => {
-    const next = jasmine.createSpy('next');
-    const previous = jasmine.createSpy('previous');
+  it('has no step buttons of its own (Back / Next / Save and next step); Esc stops', () => {
     const exit = jasmine.createSpy('exit');
-    fixture.componentInstance.auditNext.subscribe(next);
-    fixture.componentInstance.auditPrevious.subscribe(previous);
     fixture.componentInstance.auditExit.subscribe(exit);
     fixture.componentRef.setInput('auditFocus', focus());
     fixture.detectChanges();
 
-    (fixture.nativeElement.querySelector('button[aria-label="Next likely mistake"]') as HTMLButtonElement).click();
+    expect(fixture.nativeElement.querySelector('button[aria-label="Next likely mistake"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('button[aria-label="Previous likely mistake"]')).toBeNull();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p' }));
+    expect(exit).not.toHaveBeenCalled();
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-
-    expect(next).toHaveBeenCalledTimes(2);
-    expect(previous).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledTimes(1);
-  });
-
-  it('ignores n and p when no review is open', () => {
-    const next = jasmine.createSpy('next');
-    fixture.componentInstance.auditNext.subscribe(next);
-    fixture.detectChanges();
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n' }));
-    expect(next).not.toHaveBeenCalled();
   });
 
   it('Stop review removes the review bar, the lines and the keypoint filter', () => {
@@ -958,14 +944,6 @@ describe('LabelerCenterPanelComponent label audit review', () => {
     expect(mainWidget().visibleKeypoints()).toBeNull();
   });
 
-  it('disables Previous on the first finding', () => {
-    fixture.componentRef.setInput('auditFocus', focus(0));
-    fixture.detectChanges();
-    const prev = fixture.nativeElement.querySelector(
-      'button[aria-label="Previous likely mistake"]',
-    ) as HTMLButtonElement;
-    expect(prev.disabled).toBeTrue();
-  });
 });
 
 @Component({ selector: 'app-image-label-widget', template: '' })

@@ -9,10 +9,16 @@ camera calibration. No model is needed:
   is off is the one flagged. With two views the check cannot tell which one is off.
 - **swap**: a left/right pair (``L1A``/``R1A``, ``leftEye``/``rightEye``, ``leye``/``reye``)
   agrees with the other views much better after swapping the two labels in one view.
+- **shape**: the keypoint breaks the distances of a rigid group of keypoints the user
+  named (a head, an implant). The usual 3D distance of every pair of the group is
+  learned from the labels (``label_audit_shape``); the keypoint in the most off pairs
+  is reported, with the distances of the whole group in that frame.
 
-``getEpipolarGuides`` returns, for one keypoint and one target view, the epipolar
-line of each other view's label (as a polyline, so lens distortion bends it), and
-the point triangulated from the other views projected into the target view.
+``getShapeGuides`` measures one frame's rigid group with the labels as they are on screen
+(unsaved edits included), so the distances follow the user's corrections.
+
+``getEpipolarGuides`` returns, for one keypoint in one view, the epipolar lines of the
+other views' labels and the point they agree on.
 """
 
 from __future__ import annotations
@@ -33,6 +39,15 @@ from litpose_app import deps
 from litpose_app.datatypes import Project
 from litpose_app.deps import ProjectInfoGetter
 from litpose_app.routes.labeler import find_calibration_file
+from litpose_app.routes.labeler.label_audit_shape import (
+    MIN_GROUP_SIZE,
+    blame,
+    learn_distances,
+    learn_scaled_distances,
+    session_sizes,
+    template_points,
+    pair_scores,
+)
 from litpose_app.session_view import split_session_view
 from litpose_app.utils.fix_empty_first_row import fix_empty_first_row
 
@@ -43,7 +58,9 @@ DEFAULT_TOLERANCE_PX = 5.0
 # A swap is reported when swapping brings both labels within tolerance and at
 # least halves their combined error.
 SWAP_GAIN = 0.5
-
+# Rigid groups: a pair of keypoints is off when its 3D distance is this many spreads
+# from its usual distance.
+SHAPE_SPREAD_FACTOR = 3.0
 
 # ---------------------------------------------------------------- models
 class AuditLabelFileView(BaseModel):
@@ -59,21 +76,80 @@ class GetLabelAuditRequest(BaseModel):
     defaultTolerancePx: float = DEFAULT_TOLERANCE_PX
     # Per keypoint tolerance in px; keypoints not listed use defaultTolerancePx.
     tolerancePx: dict[str, float] = {}
+    # Groups of keypoints that keep their distances to each other (3 or more each).
+    rigidGroups: list[list[str]] = []
+    # Report only these keypoints (None: all). The others still take part in the
+    # checks, e.g. as members of a rigid group.
+    keypoints: list[str] | None = None
+    # Rigid groups: a pair is off when its distance is this many spreads from usual
+    # (lower = stricter).
+    shapeStrictness: float = SHAPE_SPREAD_FACTOR
+    # Rigid groups: names of the animals, as they occur in the session names. Each animal
+    # gets its own distances. Empty: one set of distances, every session at its own size.
+    animals: list[str] = []
+
+
+class ShapePair(BaseModel):
+    """The 3D distance between two keypoints of a rigid group (calibration units)."""
+
+    a: str
+    b: str
+    usual: float  # median over all frames
+    spread: float  # robust spread over all frames
+    limit: float  # off when |distance - usual| exceeds this
+    frames: int = 0  # frames the pair was learned from
+    animal: str | None = None  # whose distances these are, when animals are named
+    distance: float | None = None  # in this frame; None when it cannot be measured
+    off: bool = False
+
+
+class ShapeTemplate(BaseModel):
+    """A 3D arrangement of a rigid group that has its learned distances (to draw it)."""
+
+    animal: str | None = None
+    keypoints: list[str]
+    points: list[list[float]]  # one [x, y, z] per keypoint, calibration units
 
 
 class LabelAuditItem(BaseModel):
     """One label that is probably wrong."""
 
-    kind: str  # "multiview" | "swap"
-    view: str  # the view whose label is probably wrong
+    kind: str  # "multiview" | "swap" | "shape"
+    view: str  # the view whose label is probably wrong (shape: not known, the first view)
     keypoint: str
-    partner: str | None = None  # the other keypoint of a swap
+    partner: str | None = None  # the other keypoint of a swap, or of a single off pair
     # Image path of this frame in every view (CSV index), so the client can find the frame.
     imgPaths: dict[str, str]
-    errorPx: float  # multiview: distance to the other views' point; swap: error before swapping
+    # multiview: distance to the other views' point; swap: error before swapping (px).
+    # shape: the worst pair's difference from usual and its limit (calibration units).
+    errorPx: float
     tolerancePx: float
     score: float  # errorPx / tolerancePx; sorts items within a frame
     reason: str
+    # shape: the rigid group in this frame, to review it as a whole, and all its pairs.
+    group: list[str] = []
+    groupPairs: list[ShapePair] = []
+    # shape: how many of the keypoint's measurable pairs are off.
+    offPairs: int = 0
+    checkedPairs: int = 0
+
+
+class GetShapeGuidesRequest(GetLabelAuditRequest):
+    """The audit's settings, plus one frame as it is on screen."""
+
+    # Image path of the frame in every view (CSV index).
+    imgPaths: dict[str, str]
+    # The frame's labels now, per view and keypoint: [x, y], or null where not placed.
+    labels: dict[str, dict[str, list[float] | None]]
+    # A keypoint of the rigid group to refit.
+    keypoint: str
+
+
+class GetShapeGuidesResponse(BaseModel):
+    """As the group fields of a shape finding; empty when the group is not known."""
+
+    group: list[str] = []
+    groupPairs: list[ShapePair] = []
 
 
 class GetLabelAuditResponse(BaseModel):
@@ -81,6 +157,21 @@ class GetLabelAuditResponse(BaseModel):
     framesChecked: int
     pointsChecked: int  # keypoint x frame with labels in 2+ views
     sessionsWithoutCalibration: list[str]
+    # Rigid groups that could be checked (keypoints with a learned distance).
+    shapeGroups: list[list[str]] = []
+    # Why a requested rigid group, or part of it, was not checked.
+    shapeProblems: list[str] = []
+    # The learned pairs of all rigid groups (no per-frame fields).
+    shapePairs: list[ShapePair] = []
+    # Size of the rigid groups per session, relative to usual (animals differ in size);
+    # distances are divided by it before they are compared.
+    shapeSessionSize: dict[str, float] = {}
+    # With animals named: sessions per animal, and the sessions that match no name
+    # (those are compared among themselves).
+    shapeAnimalSessions: dict[str, int] = {}
+    shapeUnmatchedSessions: list[str] = []
+    # One arrangement per rigid group and animal.
+    shapeTemplates: list[ShapeTemplate] = []
 
 
 class GuideLabel(BaseModel):
@@ -267,7 +358,17 @@ def run_label_audit(
     views: list[AuditLabelFileView],
     default_tol: float = DEFAULT_TOLERANCE_PX,
     tol_by_kp: dict[str, float] | None = None,
+    rigid_groups: list[list[str]] | None = None,
+    only_keypoints: list[str] | None = None,
+    shape_strictness: float = SHAPE_SPREAD_FACTOR,
+    overrides: dict[str, dict[str, dict[str, list[float] | None]]] | None = None,
+    want: dict | None = None,
+    learned: list | None = None,
+    animals: list[str] | None = None,
 ) -> GetLabelAuditResponse:
+    """Run the audit. ``overrides`` (view -> image path -> keypoint -> [x, y] or None) replaces
+    labels in memory only. ``want`` ({"keypoint", "img": set of image paths}) gets "result":
+    the group data of that frame for the rigid group of that keypoint."""
     tol_by_kp = tol_by_kp or {}
     data_dir = project.paths.data_dir.resolve()
     view_names = [v.viewName for v in views]
@@ -283,6 +384,19 @@ def run_label_audit(
             )
         labels[v.viewName] = _read_labels(p)
 
+    for v, rows in (overrides or {}).items():
+        df = labels.get(v)
+        if df is None:
+            continue
+        scorer = df.columns[0][0]
+        for img, kps in rows.items():
+            if img not in df.index:
+                continue
+            for kp, xy in kps.items():
+                if (scorer, kp, "x") in df.columns:
+                    df.loc[img, (scorer, kp, "x")] = np.nan if xy is None else float(xy[0])
+                    df.loc[img, (scorer, kp, "y")] = np.nan if xy is None else float(xy[1])
+
     # Frames: (session, image name) -> {view: CSV index}
     frames: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
     for v, df in labels.items():
@@ -296,6 +410,9 @@ def run_label_audit(
     items: list[LabelAuditItem] = []
     no_calib: list[str] = []
     points_checked = 0
+    # For the shape check: per session, its rig, frames, labels and consistent 3D points.
+    shape_data: list[tuple[_Rig, list[str], list[tuple[str, str]], np.ndarray, np.ndarray]] = []
+    flagged: set[tuple[tuple[str, str], str]] = set()  # (frame, keypoint) with a finding
 
     by_session: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for fid in frames:
@@ -342,6 +459,17 @@ def run_label_audit(
         def tol_of(kp: str) -> float:
             return float(tol_by_kp.get(kp, default_tol))
 
+        if rigid_groups:
+            # 3D point of every keypoint whose labeled views agree within tolerance.
+            labeled = ~np.isnan(pts).any(axis=2)
+            p3 = rig.triangulate(rig.undistort(pts), labeled)
+            e = np.stack([np.hypot(*(rig.project(c, p3) - pts[c]).T) for c in range(len(vs))])
+            worst = np.nanmax(np.where(labeled, e, -np.inf), axis=0).reshape(F, K)
+            p3 = p3.reshape(F, K, 3)
+            tol_k = np.array([tol_of(kp) for kp in keypoints])
+            p3[~(worst <= tol_k[None])] = np.nan
+            shape_data.append((rig, vs, fids, arr, p3))
+
         swapped: set[tuple[int, int, int]] = set()  # (frame, view, keypoint) explained by a swap
         # ---- swaps: only where one of the pair is off in some view; all candidates in one batch
         cands = []  # (a, b, ka, kb, c, f)
@@ -366,6 +494,7 @@ def run_label_audit(
                     continue
                 if ea <= ta and eb <= tb and ea + eb < SWAP_GAIN * before:
                     swapped.update({(f, c, ka), (f, c, kb)})
+                    flagged.update({(fids[f], a), (fids[f], b)})
                     items.append(
                         LabelAuditItem(
                             kind="swap",
@@ -406,6 +535,7 @@ def run_label_audit(
                     reason = f"{kp}: {vs[lab[0]]} and {vs[lab[1]]} disagree by {err:.0f}px (can't tell which is off)"
                 else:
                     continue
+                flagged.add((fids[f], kp))
                 items.append(
                     LabelAuditItem(
                         kind="multiview",
@@ -418,6 +548,23 @@ def run_label_audit(
                         reason=reason,
                     )
                 )
+
+    shape_groups: list[list[str]] = []
+    shape_problems: list[str] = []
+    shape_pairs: list[ShapePair] = []
+    shape_sizes: dict[str, float] = {}
+    shape_animals: dict = dict(sessions={}, unmatched=[])
+    shape_templates: list[ShapeTemplate] = []
+    for group in rigid_groups or []:
+        _shape_findings(
+            group, keypoints, shape_data, frames, flagged,
+            items, shape_groups, shape_problems, shape_strictness, shape_pairs, want, learned, shape_sizes,
+            animals, shape_animals, shape_templates,
+        )
+
+    if only_keypoints is not None:
+        only = set(only_keypoints)
+        items = [it for it in items if it.keypoint in only or it.partner in only]
 
     # Frame order (session, image), then worst first within a frame.
     order = {fid: i for i, fid in enumerate(sorted(frames))}
@@ -432,7 +579,179 @@ def run_label_audit(
         framesChecked=len(frames),
         pointsChecked=points_checked,
         sessionsWithoutCalibration=no_calib,
+        shapeGroups=shape_groups,
+        shapeProblems=shape_problems,
+        shapePairs=shape_pairs,
+        shapeSessionSize=shape_sizes,
+        shapeAnimalSessions=shape_animals["sessions"],
+        shapeUnmatchedSessions=shape_animals["unmatched"],
+        shapeTemplates=shape_templates,
     )
+
+
+def _animal_of(session: str, animals: list[str]) -> str | None:
+    """The animal whose name occurs in the session name (the longest name wins), or None."""
+    low = session.lower()
+    hits = [a for a in animals if a.strip() and a.strip().lower() in low]
+    return max(hits, key=len).strip() if hits else None
+
+
+def _g(x: float) -> str:
+    return f"{x:.3g}"
+
+
+def _group_pairs(names, usual, spread, counts, p, factor, animal=None) -> tuple[list[ShapePair], np.ndarray]:
+    """One frame of a rigid group (p: (G, 3)): all learned pairs, and the score matrix."""
+    dist, score = pair_scores(usual, spread, p, factor)
+    pairs = []
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            if not np.isfinite(usual[i, j]):
+                continue
+            pairs.append(
+                ShapePair(
+                    a=names[i],
+                    b=names[j],
+                    usual=float(usual[i, j]),
+                    spread=float(spread[i, j]),
+                    limit=float(factor * spread[i, j]),
+                    frames=int(counts[i, j]),
+                    animal=animal,
+                    distance=float(dist[i, j]) if np.isfinite(dist[i, j]) else None,
+                    off=bool(score[i, j] > 1),
+                )
+            )
+    return pairs, score
+
+
+def _shape_findings(
+    group, keypoints, shape_data, frames, flagged, items, shape_groups, shape_problems,
+    factor=SHAPE_SPREAD_FACTOR,
+    shape_pairs=None,
+    want=None,
+    learned=None,
+    size_by_session=None,
+    animals=None,
+    animal_info=None,
+    templates=None,
+):
+    """Add the labels of one rigid group that break its distances (one per frame: the worst)."""
+    name = ", ".join(group)
+    unknown = [kp for kp in group if kp not in keypoints]
+    names = list(dict.fromkeys(kp for kp in group if kp in keypoints))
+    if unknown:
+        shape_problems.append(f"Not in the label file: {', '.join(unknown)}")
+    if len(names) < MIN_GROUP_SIZE:
+        shape_problems.append(f"A rigid group needs {MIN_GROUP_SIZE} or more keypoints: {name}")
+        return
+    if not shape_data:
+        return
+    cols = [keypoints.index(kp) for kp in names]
+    # One entry of shape_data per session. All sessions together, each at its own size:
+    sessions = [d[2][0][0] if d[2] else "" for d in shape_data]
+    pts = [d[4][:, cols] for d in shape_data]
+    usual, spread, counts, sizes = learn_scaled_distances(pts)
+    # Per session: (usual, spread, counts, size, animal) to compare its frames with.
+    tables = {s: (usual, spread, counts, size, None) for s, size in zip(sessions, sizes)}
+    by_animal: dict[str | None, list[int]] = {}
+    if animals:
+        for i, session in enumerate(sessions):
+            by_animal.setdefault(_animal_of(session, animals), []).append(i)
+        for animal, idx in by_animal.items():
+            own = np.concatenate([pts[i] for i in idx])
+            u, sp, n = learn_distances(own)
+            # Pairs this animal has too few frames for: those of all animals, at its size.
+            size = session_sizes(usual, [own])[0]
+            missing = ~np.isfinite(u)
+            u[missing], sp[missing] = (usual * size)[missing], (spread * size)[missing]
+            for i in idx:
+                tables[sessions[i]] = (u, sp, n, 1.0, animal or "other sessions")
+        if animal_info is not None:
+            for animal, idx in by_animal.items():
+                if animal is None:
+                    animal_info["unmatched"] = sorted(sessions[i] for i in idx)
+                else:
+                    animal_info["sessions"][animal] = len(idx)
+    usable = np.isfinite(usual).any(axis=1)
+    if usable.sum() < MIN_GROUP_SIZE:
+        shape_problems.append(f"Too few frames with these keypoints labeled together in 2+ views: {name}")
+        return
+    if not usable.all():
+        left_out = [kp for kp, u in zip(names, usable) if not u]
+        shape_problems.append(f"Too rarely labeled together with the rest of the group: {', '.join(left_out)}")
+    members = [kp for kp, u in zip(names, usable) if u]
+    shape_groups.append(members)
+    if learned is not None:
+        learned.append(dict(names=names, members=members, tables=tables))
+    if shape_pairs is not None:
+        nowhere = np.full((len(names), 3), np.nan)
+        shown = set()
+        for session in sessions:
+            u, sp, n, _, animal = tables[session]
+            if animal not in shown:
+                shown.add(animal)
+                shape_pairs.extend(_group_pairs(names, u, sp, n, nowhere, factor, animal)[0])
+    if templates is not None:
+        drawn = set()
+        for session in sessions:
+            u, _, _, _, animal = tables[session]
+            if animal in drawn:
+                continue
+            drawn.add(animal)
+            own = np.concatenate(
+                [p / tables[s][3] for p, s in zip(pts, sessions) if tables[s][4] == animal]
+            )
+            xyz = template_points(u, own)
+            placed = [i for i in range(len(names)) if np.isfinite(xyz[i]).all()]
+            if len(placed) >= 3:
+                templates.append(
+                    ShapeTemplate(
+                        animal=animal,
+                        keypoints=[names[i] for i in placed],
+                        points=[[float(v) for v in xyz[i]] for i in placed],
+                    )
+                )
+    if size_by_session is not None and not animals:
+        size_by_session.update({s: size for s, size in zip(sessions, sizes)})
+
+    for (rig, vs, fids, arr, p3), session in zip(shape_data, sessions):
+        usual, spread, counts, size, animal = tables[session]
+        for f, fid in enumerate(fids):
+            pairs, score = _group_pairs(names, usual, spread, counts, p3[f, cols] / size, factor, animal)
+            if want is not None and want["keypoint"] in names and want["img"] & set(frames[fid].values()):
+                want["result"] = dict(group=members, groupPairs=pairs)
+            skip = {g for g in range(len(names)) if (fid, names[g]) in flagged}
+            found = blame(score, skip)
+            if found is None:
+                continue
+            g, partner = found
+            row = np.nan_to_num(score[g], nan=0.0)
+            o = int(np.argmax(row))
+            worst = next(p for p in pairs if {p.a, p.b} == {names[g], names[o]})
+            n_off, n_checked = int((row > 1).sum()), int(np.isfinite(score[g]).sum())
+            way = "too long" if worst.distance > worst.usual else "too short"
+            reason = f"{names[g]} to {names[o]} {way} ({100 * worst.distance / worst.usual:.0f}% of usual); "
+            if partner is None:
+                reason += f"{n_off} of {n_checked} distances of {names[g]} are off"
+            else:
+                reason += "one of the two is off"
+            items.append(
+                LabelAuditItem(
+                    kind="shape",
+                    view=vs[0],
+                    keypoint=names[g],
+                    partner=names[partner] if partner is not None else None,
+                    imgPaths=frames[fid],
+                    errorPx=abs(worst.distance - worst.usual),
+                    tolerancePx=worst.limit,
+                    score=float(row[o]),
+                    reason=reason,
+                    group=members,
+                    groupPairs=pairs,
+                    offPairs=n_off,
+                    checkedPairs=n_checked,
+                )
+            )
 
 
 @router.post("/app/v0/rpc/getLabelAudit")
@@ -448,8 +767,95 @@ async def get_label_audit(
             detail="The label audit needs a multiview label file (two or more views).",
         )
     return await run_in_threadpool(
-        run_label_audit, project, request.views, request.defaultTolerancePx, request.tolerancePx
+        run_label_audit,
+        project,
+        request.views,
+        request.defaultTolerancePx,
+        request.tolerancePx,
+        request.rigidGroups,
+        request.keypoints,
+        request.shapeStrictness,
+        animals=request.animals,
     )
+
+
+# Learned distances of the last request settings, so an update after an edit only handles one frame.
+_SHAPE_CACHE: dict[tuple, list[dict]] = {}
+
+
+def _learned_shapes(project: Project, request: GetShapeGuidesRequest) -> list[dict]:
+    """Pair distances of the rigid groups, learned from the saved labels (cached until they change)."""
+    data_dir = project.paths.data_dir.resolve()
+    files = []
+    for v in request.views:
+        p = v.csvPath if v.csvPath.is_absolute() else data_dir / v.csvPath
+        files.append((str(p), p.stat().st_mtime_ns if p.exists() else 0))
+    key = (
+        request.projectKey,
+        tuple(files),
+        request.defaultTolerancePx,
+        tuple(sorted(request.tolerancePx.items())),
+        tuple(tuple(g) for g in request.rigidGroups),
+        request.shapeStrictness,
+        tuple(request.animals),
+    )
+    if key not in _SHAPE_CACHE:
+        learned: list[dict] = []
+        run_label_audit(
+            project, request.views, request.defaultTolerancePx, request.tolerancePx,
+            request.rigidGroups, None, request.shapeStrictness, None, None, learned, request.animals,
+        )
+        _SHAPE_CACHE.clear()
+        _SHAPE_CACHE[key] = learned
+    return _SHAPE_CACHE[key]
+
+
+def shape_guides(project: Project, request: GetShapeGuidesRequest) -> GetShapeGuidesResponse:
+    entry = next((e for e in _learned_shapes(project, request) if request.keypoint in e["names"]), None)
+    if entry is None:
+        return GetShapeGuidesResponse()
+    view_names = [v.viewName for v in request.views]
+    project_views = list(project.config.view_names or view_names) if project.config else view_names
+    fid = next((f for f in (_frame_id(p, project_views) for p in request.imgPaths.values()) if f), None)
+    calib = find_calibration_file(fid[0], project) if fid else None
+    if calib is None:
+        return GetShapeGuidesResponse()
+    cg_all = CameraGroup.load(str(calib))
+    cam_names = [c.get_name() for c in cg_all.cameras]
+    vs = [v for v in view_names if v in cam_names]
+    if len(vs) < 2:
+        return GetShapeGuidesResponse()
+    rig = _Rig(cg_all.subset_cameras_names(vs))
+    names = entry["names"]
+    arr = np.full((len(vs), len(names), 2), np.nan)
+    for c, v in enumerate(vs):
+        for k, kp in enumerate(names):
+            xy = request.labels.get(v, {}).get(kp)
+            if xy is not None and len(xy) == 2:
+                arr[c, k] = xy
+    # 3D point of every keypoint whose labeled views agree within tolerance (as in the audit).
+    labeled = ~np.isnan(arr).any(axis=2)
+    p3 = rig.triangulate(rig.undistort(arr), labeled)
+    e = np.stack([np.hypot(*(rig.project(c, p3) - arr[c]).T) for c in range(len(vs))])
+    reproj = np.nanmax(np.where(labeled, e, -np.inf), axis=0)
+    tol_k = np.array([float(request.tolerancePx.get(kp, request.defaultTolerancePx)) for kp in names])
+    p3[~(reproj <= tol_k)] = np.nan
+    table = entry["tables"].get(fid[0])
+    if table is None:
+        return GetShapeGuidesResponse()
+    usual, spread, counts, size, animal = table
+    pairs, _ = _group_pairs(names, usual, spread, counts, p3 / size, request.shapeStrictness, animal)
+    return GetShapeGuidesResponse(group=entry["members"], groupPairs=pairs)
+
+
+@router.post("/app/v0/rpc/getShapeGuides")
+async def get_shape_guides(
+    request: GetShapeGuidesRequest,
+    project_info_getter: ProjectInfoGetter = Depends(deps.project_info_getter),
+) -> GetShapeGuidesResponse:
+    """Measure one frame's rigid group with its labels as they are on screen (nothing is saved)."""
+    project: Project = project_info_getter(request.projectKey)
+    return await run_in_threadpool(shape_guides, project, request)
 
 
 # ---------------------------------------------------------------- epipolar guides

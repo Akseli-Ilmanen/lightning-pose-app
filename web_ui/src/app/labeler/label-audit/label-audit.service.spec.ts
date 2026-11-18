@@ -1,5 +1,9 @@
 import { TestBed } from '@angular/core/testing';
-import { LabelAuditService, matchFindingsToFrames } from './label-audit.service';
+import {
+  LabelAuditService,
+  matchFindingsToFrames,
+  rigidGroupsOf,
+} from './label-audit.service';
 import { RpcService } from '../../rpc.service';
 import { ProjectInfoService } from '../../project-info.service';
 import { MVFrame } from '../frame.model';
@@ -48,6 +52,7 @@ describe('LabelAuditService', () => {
   let rpc: jasmine.SpyObj<RpcService>;
 
   beforeEach(() => {
+    localStorage.removeItem('label-audit.keypoints.proj');
     rpc = jasmine.createSpyObj('RpcService', ['call']);
     const projectInfo = jasmine.createSpyObj('ProjectInfoService', ['projectContext']);
     projectInfo.projectContext.and.returnValue({ key: 'proj' });
@@ -89,9 +94,33 @@ describe('LabelAuditService', () => {
         { viewName: 'side', csvPath: '/d/CollectedData_side.csv' },
       ],
       defaultTolerancePx: 3,
+      rigidGroups: [],
+      keypoints: null,
+      shapeStrictness: 3,
+      animals: [],
     });
     expect(service.auditedLabelFileKey()).toBe('CollectedData');
     expect(service.summary()?.framesChecked).toBe(2);
+  });
+
+  it('sends the ticked keypoints and the rigid groups, and remembers them for the project', async () => {
+    const kp = (keypointName: string) => ({ keypointName, x: 1, y: 1 });
+    const f = frame(1);
+    f.views.forEach((v) => (v.keypoints = ['nose', 'earL', 'earR', 'top', 'tail'].map(kp) as never));
+    ['nose', 'earL', 'earR', 'top'].forEach((n) => service.setGroup(n, 1));
+    service.setChecked(['tail'], false);
+    rpc.call.and.resolveTo({ items: [], framesChecked: 1, pointsChecked: 5, sessionsWithoutCalibration: [] });
+
+    await service.run(labelFile, [f]);
+
+    const payload = rpc.call.calls.mostRecent().args[1] as { rigidGroups: string[][]; keypoints: string[] };
+    expect(payload.rigidGroups).toEqual([['nose', 'earL', 'earR', 'top']]);
+    expect(payload.keypoints).toEqual(['nose', 'earL', 'earR', 'top']);
+    expect(JSON.parse(localStorage.getItem('label-audit.keypoints.proj')!)).toEqual({
+      unchecked: ['tail'],
+      groups: { nose: 1, earL: 1, earR: 1, top: 1 },
+    });
+    localStorage.removeItem('label-audit.keypoints.proj');
   });
 
   it('reviews findings in order and stops at the ends', async () => {
@@ -123,5 +152,18 @@ describe('LabelAuditService', () => {
     expect(service.error()).toBe('needs two views');
     expect(service.findings()).toEqual([]);
     expect(service.isRunning()).toBeFalse();
+  });
+});
+
+describe('rigidGroupsOf', () => {
+  it('has no group when no keypoint has a number', () => {
+    expect(rigidGroupsOf({}, ['a', 'b'])).toEqual([]);
+  });
+
+  it('lists each group in number order, names in keypoint order', () => {
+    expect(rigidGroupsOf({ c: 2, a: 1, b: 1, d: 2, x: 0 }, ['a', 'b', 'c', 'd', 'x'])).toEqual([
+      ['a', 'b'],
+      ['c', 'd'],
+    ]);
   });
 });

@@ -6,12 +6,42 @@
     </div>
   }
 </div>
-<div class="text-xs opacity-70 py-1">
-  Finds labels the camera calibration disagrees with: views that don't meet
-  in 3D, and left/right swaps.
+<div role="tablist" class="tabs tabs-border tabs-xs" aria-label="Audit">
+  <button
+    type="button"
+    role="tab"
+    class="tab"
+    data-testid="audit-tab-views"
+    [class.tab-active]="audit.mode() === 'views'"
+    [attr.aria-selected]="audit.mode() === 'views'"
+    (click)="audit.setMode('views')"
+  >
+    1. Views
+    @if (showFindings()) {
+      <span class="badge badge-xs ml-1">{{ audit.viewsCount() }}</span>
+    }
+  </button>
+  <button
+    type="button"
+    role="tab"
+    class="tab"
+    data-testid="audit-tab-shape"
+    [class.tab-active]="audit.mode() === 'shape'"
+    [attr.aria-selected]="audit.mode() === 'shape'"
+    (click)="audit.setMode('shape')"
+  >
+    2. Distances
+    @if (showFindings()) {
+      <span class="badge badge-xs ml-1">{{ audit.shapeCount() }}</span>
+    }
+  </button>
 </div>
-<div class="flex items-center gap-2 py-1">
-  <label class="flex items-center gap-1 text-xs">
+@if (audit.mode() === 'views') {
+  <div class="text-xs opacity-70 py-1">
+    Labels the camera calibration disagrees with: the views don't meet in 3D,
+    or a left/right pair is swapped. Fix these first.
+  </div>
+  <label class="flex items-center gap-1 text-xs py-1">
     Tolerance
     <input
       type="number"
@@ -22,27 +52,123 @@
       [ngModel]="audit.tolerancePx()"
       (ngModelChange)="onTolerance($event)"
     />
-    px
+    px between the views
   </label>
-  <div
-    class="grow"
-    [class.tooltip]="!!runDisabledReason()"
-    [attr.data-tip]="runDisabledReason() || null"
-  >
+} @else {
+  <div class="text-xs opacity-70 py-1">
+    Keypoints of a rigid group (e.g. the head) keep their 3D distances. Give
+    them the same group number under "Keypoints" (3 or more).
+  </div>
+  <label class="flex flex-wrap items-center gap-1 text-xs py-1">
+    <span
+      class="tooltip tooltip-right"
+      data-tip="A multiplier of each pair's spread, not pixels. After a check, 'Learned distances' lists the ranges."
+      >Allowed: usual ±</span
+    >
+    <input
+      type="number"
+      min="1"
+      step="0.5"
+      class="input input-xs w-14"
+      aria-label="Limit as a number of spreads"
+      [ngModel]="audit.shapeStrictness()"
+      (ngModelChange)="onStrictness($event)"
+    />
+    × spread
+  </label>
+  <label class="flex items-center gap-1 text-xs py-1">
+    <span
+      class="tooltip tooltip-right shrink-0"
+      data-tip="Optional. Names as they occur in the session names, comma separated (e.g. Freddy, Ivy). Each animal then gets its own distances. Empty: one set of distances, with every session compared at its own size."
+      >Animals</span
+    >
+    <input
+      type="text"
+      class="input input-xs grow min-w-0"
+      placeholder="names in the session names"
+      aria-label="Animal names in the session names"
+      [ngModel]="audit.animals()"
+      (ngModelChange)="audit.setAnimals($event)"
+    />
+  </label>
+  @if (showFindings() && audit.viewsCount() > 0) {
+    <div class="text-xs text-warning py-1" data-testid="audit-views-first">
+      {{ audit.viewsCount() }} view
+      {{ audit.viewsCount() === 1 ? 'finding is' : 'findings are' }} still open.
+      Fix those first.
+    </div>
+  }
+}
+<details class="text-xs py-1" data-testid="audit-keypoints">
+  <summary class="cursor-pointer select-none">
+    Keypoints: {{ checkedCount() }} of {{ keypointNames().length }} checked@if (audit.mode() === 'shape') {, {{ rigidGroupCount() }} rigid {{ rigidGroupCount() === 1 ? 'group' : 'groups' }}}
+  </summary>
+  <div class="flex items-center gap-1 py-1">
     <button
       type="button"
-      class="btn btn-xs btn-soft btn-primary w-full"
-      [disabled]="!canRun()"
-      (click)="run()"
+      class="btn btn-xs btn-soft"
+      (click)="audit.setChecked(keypointNames(), true)"
     >
-      @if (audit.isRunning()) {
-        <span class="loading loading-spinner loading-xs"></span>
-      } @else {
-        <span class="material-icons text-sm!">fact_check</span>
-      }
-      Check labels
+      All
     </button>
+    <button
+      type="button"
+      class="btn btn-xs btn-soft"
+      (click)="audit.setChecked(keypointNames(), false)"
+    >
+      None
+    </button>
+    @if (audit.mode() === 'shape') {
+      <span class="ml-auto opacity-70">Rigid group</span>
+    }
   </div>
+  <ul class="max-h-48 overflow-y-auto">
+    @for (name of keypointNames(); track name) {
+      <li class="flex items-center gap-2 py-0.5">
+        <label class="flex items-center gap-1 grow min-w-0 cursor-pointer">
+          <input
+            type="checkbox"
+            class="checkbox checkbox-xs"
+            [attr.aria-label]="'Check ' + name"
+            [checked]="audit.isChecked(name)"
+            (change)="audit.setChecked([name], $any($event.target).checked)"
+          />
+          <span class="truncate">{{ name }}</span>
+        </label>
+        @if (audit.mode() === 'shape') {
+          <select
+            class="select select-xs w-14"
+            [attr.aria-label]="'Rigid group of ' + name"
+            (change)="audit.setGroup(name, +$any($event.target).value)"
+          >
+            <option value="0" [selected]="audit.groupOf(name) === 0">–</option>
+            @for (g of groupNumbers; track g) {
+              <option [value]="g" [selected]="audit.groupOf(name) === g">{{ g }}</option>
+            }
+          </select>
+        }
+      </li>
+    }
+  </ul>
+</details>
+<div
+  class="py-1"
+  [class.tooltip]="!!runDisabledReason()"
+  [attr.data-tip]="runDisabledReason() || null"
+>
+  <button
+    type="button"
+    class="btn btn-xs btn-soft btn-primary w-full"
+    [disabled]="!canRun()"
+    (click)="run()"
+  >
+    @if (audit.isRunning()) {
+      <span class="loading loading-spinner loading-xs"></span>
+    } @else {
+      <span class="material-icons text-sm!">fact_check</span>
+    }
+    Check labels
+  </button>
 </div>
 
 @if (audit.error(); as err) {
@@ -61,6 +187,103 @@
         ({{ s.pointsChecked }} points checked).
       }
     </div>
+    @if (audit.mode() === 'shape' && s.shapeTemplates?.length) {
+      <button
+        type="button"
+        class="btn btn-xs btn-soft my-1"
+        data-testid="audit-show-templates"
+        (click)="templateDialog.showModal()"
+      >
+        Show {{ s.shapeTemplates!.length === 1 ? 'rigid group' : 'rigid groups' }} in 3D
+      </button>
+      <dialog #templateDialog class="modal" data-testid="audit-template-dialog">
+        <div class="modal-box max-w-none w-auto">
+          <div class="flex items-center gap-3 pb-2">
+            <h3 class="font-semibold">Learned rigid groups</h3>
+            <span class="text-xs opacity-70"
+              >Usual 3D distances on the edges. Drag to rotate, wheel to zoom (double click
+              resets); click a keypoint to see only its distances.</span
+            >
+            <form method="dialog" class="ml-auto">
+              <button class="btn btn-sm">Close</button>
+            </form>
+          </div>
+          <div class="flex flex-wrap gap-3 justify-center">
+            @for (t of s.shapeTemplates!; track $index) {
+              <div class="border border-base-300 rounded-lg p-1 w-[26rem] max-w-full">
+                <div class="text-sm font-semibold">
+                  {{ t.animal ?? 'All sessions' }}
+                  <span class="font-normal opacity-70">· {{ t.keypoints.length }} keypoints</span>
+                </div>
+                <app-shape-template-view [template]="t" [pairs]="pairsOf(t)" />
+              </div>
+            }
+          </div>
+        </div>
+        <form method="dialog" class="modal-backdrop"><button>close</button></form>
+      </dialog>
+    }
+    @if (audit.mode() === 'shape' && s.shapePairs?.length) {
+      <details class="text-xs py-1" data-testid="audit-shape-pairs">
+        <summary class="cursor-pointer select-none">
+          Learned distances: {{ s.shapePairs!.length }} pairs
+        </summary>
+        <div class="opacity-70 py-1">
+          Usual 3D distance and the allowed range, in the units of the
+          calibration. A wide range (%) means the pair is not rigid, or often
+          labeled loosely.
+        </div>
+        <ul class="max-h-48 overflow-y-auto">
+          @for (p of s.shapePairs!; track (p.animal ?? '') + '|' + p.a + '|' + p.b) {
+            <li class="flex gap-2 py-0.5">
+              <span class="truncate grow">{{ p.animal ? p.animal + ' · ' : '' }}{{ p.a }} – {{ p.b }}</span>
+              <span class="shrink-0 opacity-70"
+                >{{ sig(p.usual) }}, allowed {{ sig(p.usual - p.limit) }}–{{
+                  sig(p.usual + p.limit)
+                }} (±{{ (100 * p.limit) / p.usual | number: '1.0-0' }}%)</span
+              >
+            </li>
+          }
+        </ul>
+      </details>
+    }
+    @if (audit.mode() === 'shape' && sessionSizes().length > 1) {
+      <details class="text-xs py-1" data-testid="audit-session-sizes">
+        <summary class="cursor-pointer select-none">
+          Size per session: {{ sessionSizes()[0].size | percent: '1.0-0' }}–{{
+            sessionSizes()[sessionSizes().length - 1].size | percent: '1.0-0'
+          }}
+        </summary>
+        <div class="opacity-70 py-1">
+          Animals differ in size, so each session is compared at its own size
+          (found from its labels; nothing to set).
+        </div>
+        <ul class="max-h-48 overflow-y-auto">
+          @for (x of sessionSizes(); track x.session) {
+            <li class="flex gap-2 py-0.5">
+              <span class="truncate grow">{{ x.session }}</span>
+              <span class="shrink-0 opacity-70">{{ x.size | percent: '1.0-0' }}</span>
+            </li>
+          }
+        </ul>
+      </details>
+    }
+    @if (audit.mode() === 'shape' && s.shapeUnmatchedSessions?.length) {
+      <div
+        class="text-xs text-warning py-1"
+        data-testid="audit-unmatched-sessions"
+        [title]="s.shapeUnmatchedSessions!.join(', ')"
+      >
+        {{ s.shapeUnmatchedSessions!.length }}
+        {{ s.shapeUnmatchedSessions!.length === 1 ? 'session matches' : 'sessions match' }} no
+        animal name (compared among themselves).
+      </div>
+    }
+    @for (problem of s.shapeProblems ?? []; track $index) {
+      <div class="text-xs text-warning py-1" data-testid="audit-shape-problem">
+        Rigid group: {{ problem }}
+      </div>
+    }
     @if (s.sessionsWithoutCalibration.length) {
       <div class="text-xs text-warning py-1">
         Not checked, no calibration:
@@ -113,15 +336,26 @@
                   class="badge badge-xs shrink-0"
                   [class.badge-warning]="f.kind === 'swap'"
                   [class.badge-info]="f.kind === 'multiview'"
+                  [class.badge-accent]="f.kind === 'shape'"
                   >{{ kindLabel(f) }}</span
                 >
-                <span class="truncate"
-                  >{{ frameName(f) }} · {{ f.view }} · {{ f.keypoint
-                  }}{{ f.partner ? '/' + f.partner : '' }}</span
-                >
-                <span class="ml-auto shrink-0 opacity-70"
-                  >{{ f.errorPx | number: '1.0-0' }}px</span
-                >
+                @if (f.kind === 'shape') {
+                  <span class="truncate"
+                    >{{ frameName(f) }} · {{ f.keypoint
+                    }}{{ f.partner ? ' or ' + f.partner : '' }}</span
+                  >
+                  <span class="ml-auto shrink-0 opacity-70"
+                    >{{ f.offPairs }} of {{ f.checkedPairs }} off</span
+                  >
+                } @else {
+                  <span class="truncate"
+                    >{{ frameName(f) }} · {{ f.view }} · {{ f.keypoint
+                    }}{{ f.partner ? '/' + f.partner : '' }}</span
+                  >
+                  <span class="ml-auto shrink-0 opacity-70"
+                    >{{ f.errorPx | number: '1.0-0' }}px</span
+                  >
+                }
               </span>
             </button>
           </li>
