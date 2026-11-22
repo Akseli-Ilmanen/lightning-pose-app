@@ -54,6 +54,20 @@
     />
     px between the views
   </label>
+  <label class="flex items-center gap-1 text-xs py-1 cursor-pointer">
+    <input
+      type="checkbox"
+      class="checkbox checkbox-xs"
+      aria-label="Only labels in two or more views"
+      [checked]="audit.onlyTwoOrMoreViews()"
+      (change)="audit.onlyTwoOrMoreViews.set($any($event.target).checked)"
+    />
+    <span
+      class="tooltip tooltip-right"
+      data-tip="Off: keypoints labeled in one view and missing in another are listed too. The review opens the view without the label and draws the line from the other view; place the keypoint on it, or go on if it is not visible."
+      >Only labels in two or more views</span
+    >
+  </label>
 } @else {
   <div class="text-xs opacity-70 py-1">
     Keypoints of a rigid group (e.g. the head) keep their 3D distances. Give
@@ -91,10 +105,10 @@
       (ngModelChange)="audit.setAnimals($event)"
     />
   </label>
-  @if (showFindings() && audit.viewsCount() > 0) {
+  @if (showFindings() && audit.disagreeCount() > 0) {
     <div class="text-xs text-warning py-1" data-testid="audit-views-first">
-      {{ audit.viewsCount() }} view
-      {{ audit.viewsCount() === 1 ? 'finding is' : 'findings are' }} still open.
+      {{ audit.disagreeCount() }} view
+      {{ audit.disagreeCount() === 1 ? 'finding is' : 'findings are' }} still open.
       Fix those first.
     </div>
   }
@@ -352,9 +366,11 @@
                     >{{ frameName(f) }} · {{ f.view }} · {{ f.keypoint
                     }}{{ f.partner ? '/' + f.partner : '' }}</span
                   >
-                  <span class="ml-auto shrink-0 opacity-70"
-                    >{{ f.errorPx | number: '1.0-0' }}px</span
-                  >
+                  @if (f.kind !== 'oneview') {
+                    <span class="ml-auto shrink-0 opacity-70"
+                      >{{ f.errorPx | number: '1.0-0' }}px</span
+                    >
+                  }
                 }
               </span>
             </button>

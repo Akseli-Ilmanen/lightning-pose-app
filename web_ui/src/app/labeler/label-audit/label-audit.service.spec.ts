@@ -98,9 +98,21 @@ describe('LabelAuditService', () => {
       keypoints: null,
       shapeStrictness: 3,
       animals: [],
+      onlyTwoOrMoreViews: true,
     });
     expect(service.auditedLabelFileKey()).toBe('CollectedData');
     expect(service.summary()?.framesChecked).toBe(2);
+  });
+
+  it('asks for the labels missing in one view when "only two or more views" is off', async () => {
+    service.onlyTwoOrMoreViews.set(false);
+    await runWith([item(1, { kind: 'oneview', errorPx: 0, score: 0 }), item(2)]);
+    expect(rpc.call.calls.mostRecent().args[1]).toEqual(
+      jasmine.objectContaining({ onlyTwoOrMoreViews: false }),
+    );
+    // listed with the views findings, but not counted as a certain mistake
+    expect(service.viewsCount()).toBe(2);
+    expect(service.disagreeCount()).toBe(1);
   });
 
   it('sends the ticked keypoints and the rigid groups, and remembers them for the project', async () => {

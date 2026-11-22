@@ -49,6 +49,12 @@ export class LabelAuditService {
   private projectInfoService = inject(ProjectInfoService);
 
   readonly tolerancePx = signal(DEFAULT_AUDIT_TOLERANCE_PX);
+  /**
+   * Views check: only compare labels that exist in two or more views. Off: keypoints
+   * labeled in some views and missing in another are listed too, to place them on the
+   * epipolar line.
+   */
+  readonly onlyTwoOrMoreViews = signal(true);
   /** Keypoints to report and their rigid groups. Remembered per project. */
   readonly choices = signal<AuditKeypointChoices>(this.storedChoices());
   readonly isRunning = signal(false);
@@ -73,6 +79,10 @@ export class LabelAuditService {
       .filter((a) => a.length > 0),
   );
   readonly viewsCount = computed(() => this.allFindings().filter((f) => f.kind !== 'shape').length);
+  /** Views findings that are mistakes for certain (not the "one view" ones). */
+  readonly disagreeCount = computed(
+    () => this.allFindings().filter((f) => f.kind === 'multiview' || f.kind === 'swap').length,
+  );
   readonly shapeCount = computed(() => this.allFindings().filter((f) => f.kind === 'shape').length);
   /** Findings of the shown audit; the review steps through these. */
   readonly findings = computed(() =>
@@ -129,6 +139,7 @@ export class LabelAuditService {
         keypoints: checked.length === names.length ? null : checked,
         shapeStrictness: this.shapeStrictness(),
         animals: this.animalNames(),
+        onlyTwoOrMoreViews: this.onlyTwoOrMoreViews(),
       })) as GetLabelAuditResponse;
       const { items, ...summary } = response;
       const findings = matchFindingsToFrames(items, frames);

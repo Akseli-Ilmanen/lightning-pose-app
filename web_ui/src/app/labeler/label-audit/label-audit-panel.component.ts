@@ -82,6 +82,7 @@ export class LabelAuditPanelComponent {
 
   protected kindLabel(f: AuditFinding): string {
     if (f.kind === 'shape') return 'distance';
+    if (f.kind === 'oneview') return 'one view';
     return f.kind === 'swap' ? 'swap' : 'views';
   }
 

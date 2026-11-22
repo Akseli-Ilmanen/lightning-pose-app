@@ -9,6 +9,9 @@ camera calibration. No model is needed:
   is off is the one flagged. With two views the check cannot tell which one is off.
 - **swap**: a left/right pair (``L1A``/``R1A``, ``leftEye``/``rightEye``, ``leye``/``reye``)
   agrees with the other views much better after swapping the two labels in one view.
+- **oneview** (only when asked for): the keypoint is labeled in some views but not in
+  another. Nothing is wrong for certain: the keypoint may be hidden there. The review
+  shows the epipolar line of the labeled views, to place it where it is visible.
 - **shape**: the keypoint breaks the distances of a rigid group of keypoints the user
   named (a head, an implant). The usual 3D distance of every pair of the group is
   learned from the labels (``label_audit_shape``); the keypoint in the most off pairs
@@ -87,6 +90,9 @@ class GetLabelAuditRequest(BaseModel):
     # Rigid groups: names of the animals, as they occur in the session names. Each animal
     # gets its own distances. Empty: one set of distances, every session at its own size.
     animals: list[str] = []
+    # True: only compare labels that exist in two or more views. False: also list the
+    # keypoints labeled in some views and missing in another ("oneview").
+    onlyTwoOrMoreViews: bool = True
 
 
 class ShapePair(BaseModel):
@@ -114,8 +120,10 @@ class ShapeTemplate(BaseModel):
 class LabelAuditItem(BaseModel):
     """One label that is probably wrong."""
 
-    kind: str  # "multiview" | "swap" | "shape"
-    view: str  # the view whose label is probably wrong (shape: not known, the first view)
+    kind: str  # "multiview" | "swap" | "oneview" | "shape"
+    # The view whose label is probably wrong (shape: not known, the first view;
+    # oneview: the view without the label).
+    view: str
     keypoint: str
     partner: str | None = None  # the other keypoint of a swap, or of a single off pair
     # Image path of this frame in every view (CSV index), so the client can find the frame.
@@ -365,6 +373,7 @@ def run_label_audit(
     want: dict | None = None,
     learned: list | None = None,
     animals: list[str] | None = None,
+    single_view: bool = False,
 ) -> GetLabelAuditResponse:
     """Run the audit. ``overrides`` (view -> image path -> keypoint -> [x, y] or None) replaces
     labels in memory only. ``want`` ({"keypoint", "img": set of image paths}) gets "result":
@@ -513,7 +522,26 @@ def run_label_audit(
         for f in range(F):
             for k, kp in enumerate(keypoints):
                 t = tol_of(kp)
-                n = int((~np.isnan(arr[:, f, k]).any(axis=1)).sum())
+                has = ~np.isnan(arr[:, f, k]).any(axis=1)
+                n = int(has.sum())
+                if single_view and 1 <= n < len(vs):
+                    seen = ", ".join(vs[i] for i in range(len(vs)) if has[i])
+                    for c in range(len(vs)):
+                        if has[c] or vs[c] not in frames[fids[f]]:
+                            continue
+                        items.append(
+                            LabelAuditItem(
+                                kind="oneview",
+                                view=vs[c],
+                                keypoint=kp,
+                                imgPaths=frames[fids[f]],
+                                errorPx=0.0,
+                                tolerancePx=t,
+                                score=0.0,
+                                reason=f"{kp} is labeled in {seen}, not in {vs[c]}: "
+                                "place it on the line if you can see it",
+                            )
+                        )
                 if n >= 3:
                     e, r = loo[:, f, k], resid[:, f, k]
                     if np.isnan(e).all() or not np.nanmax(e) > t:
@@ -776,6 +804,7 @@ async def get_label_audit(
         request.keypoints,
         request.shapeStrictness,
         animals=request.animals,
+        single_view=not request.onlyTwoOrMoreViews,
     )
 
 

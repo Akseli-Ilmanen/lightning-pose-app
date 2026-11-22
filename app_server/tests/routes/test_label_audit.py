@@ -138,6 +138,25 @@ def test_two_views_only_flags_the_disagreement(client: TestClient, project):
     assert items[0]["keypoint"] == "nose" and "can't tell" in items[0]["reason"]
 
 
+def test_labels_in_one_view_only_are_listed_when_asked_for(client: TestClient, project):
+    data_dir, _, labels = project
+    labels["camB"][2, 1] = np.nan  # leftEar missing in camB
+    labels["camA"][4, 0] = np.nan  # nose only in camC
+    labels["camB"][4, 0] = np.nan
+    _save(data_dir, labels)
+
+    assert _audit(client, data_dir).json()["items"] == []  # default: only labels in 2+ views
+
+    items = _audit(client, data_dir, onlyTwoOrMoreViews=False).json()["items"]
+
+    assert {i["kind"] for i in items} == {"oneview"}
+    # one finding per view without the label, opened in that view
+    assert sorted((i["keypoint"], i["view"]) for i in items) == [
+        ("leftEar", "camB"), ("nose", "camA"), ("nose", "camB"),
+    ]
+    assert all(i["imgPaths"][i["view"]].startswith(f"labeled-data/{SESSION}_{i['view']}/") for i in items)
+
+
 def test_sessions_without_calibration_are_listed(client: TestClient, project):
     data_dir, _, labels = project
     _save(data_dir, labels)

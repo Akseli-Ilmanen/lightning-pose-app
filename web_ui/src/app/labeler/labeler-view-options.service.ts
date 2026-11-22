@@ -119,9 +119,13 @@ export class LabelerViewOptionsService {
   keepSelectedKeypoint = signal(
     storedFlag('labeler-view-options.keepSelectedKeypoint', false),
   );
-  /** Epipolar lines of the selected keypoint (needs camera calibration). */
+  /** Epipolar lines of the selected keypoint while reviewing the label audit (needs camera calibration). */
   showEpipolarLines = signal(
     storedFlag('labeler-view-options.showEpipolarLines', true),
+  );
+  /** The same lines while labeling normally, outside a review. */
+  showEpipolarLinesWhileLabeling = signal(
+    storedFlag('labeler-view-options.showEpipolarLinesWhileLabeling', false),
   );
   /** How many epipolar lines to draw: the ones that cross most steeply come first. */
   maxEpipolarLines = signal(
@@ -138,6 +142,12 @@ export class LabelerViewOptionsService {
       localStorage.setItem(
         'labeler-view-options.showEpipolarLines',
         String(this.showEpipolarLines()),
+      ),
+    );
+    effect(() =>
+      localStorage.setItem(
+        'labeler-view-options.showEpipolarLinesWhileLabeling',
+        String(this.showEpipolarLinesWhileLabeling()),
       ),
     );
     effect(() =>

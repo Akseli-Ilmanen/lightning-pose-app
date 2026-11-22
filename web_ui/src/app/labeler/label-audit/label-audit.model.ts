@@ -1,12 +1,13 @@
 /** Wire types of getLabelAudit and getEpipolarGuides (routes/labeler/label_audit.py). */
 
-export type LabelAuditKind = 'multiview' | 'swap' | 'shape';
+/** 'oneview': labeled in some views, missing in another (listed only when asked for). */
+export type LabelAuditKind = 'multiview' | 'swap' | 'oneview' | 'shape';
 /** The two audits: "views" (the cameras disagree, swaps) and "shape" (off a rigid group). */
 export type AuditMode = 'views' | 'shape';
 
 export interface LabelAuditItem {
   kind: LabelAuditKind;
-  /** The view whose label is probably wrong. */
+  /** The view whose label is probably wrong; oneview: the view without the label. */
   view: string;
   keypoint: string;
   /** The other keypoint of a left/right swap, or of a single off distance (shape). */

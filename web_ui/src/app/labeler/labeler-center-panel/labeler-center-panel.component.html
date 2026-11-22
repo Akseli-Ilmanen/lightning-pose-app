@@ -25,12 +25,13 @@
             data-testid="audit-review-bar"
             class="alert alert-soft py-2 px-3 mb-2 flex flex-wrap items-center gap-2 text-sm"
             [class.alert-warning]="finding.kind === 'swap'"
-            [class.alert-info]="finding.kind === 'multiview'"
+            [class.alert-info]="finding.kind === 'multiview' || finding.kind === 'oneview'"
             [class.alert-accent]="finding.kind === 'shape'"
             [style.max-width.px]="viewOptions.imageSizePx()"
           >
             <span class="font-semibold">
-              Likely mistake {{ focus.index + 1 }} / {{ focus.total }}
+              {{ finding.kind === 'oneview' ? 'Missing in this view' : 'Likely mistake' }}
+              {{ focus.index + 1 }} / {{ focus.total }}
             </span>
             @if (shapeStatus(); as r) {
               <span class="grow min-w-0 flex flex-wrap gap-x-3" data-testid="audit-shape-reason">
@@ -148,6 +149,23 @@
               }
               <span class="truncate">{{ fv.imgPath.split('/').pop() }}</span>
             </div>
+            @if (!auditFocus() && isMultiview() && hasCameraCalibrationFiles()) {
+              <label
+                class="flex items-center gap-1 text-xs cursor-pointer shrink-0 ml-auto mr-2 tooltip tooltip-bottom"
+                data-tip="For the selected keypoint: where its labels in the other views put it in this view"
+              >
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-xs"
+                  aria-label="Show epipolar lines while labeling"
+                  [checked]="viewOptions.showEpipolarLinesWhileLabeling()"
+                  (change)="
+                    viewOptions.showEpipolarLinesWhileLabeling.set($any($event.target).checked)
+                  "
+                />
+                Epipolar lines
+              </label>
+            }
             <span
               class="btn btn-circle btn-xs material-icons !text-sm"
               (click)="closeFrame.emit()"

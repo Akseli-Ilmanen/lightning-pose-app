@@ -136,14 +136,20 @@ export class LabelerCenterPanelComponent implements OnChanges {
   });
 
   /**
-   * Epipolar lines of the selected keypoint's labels in the other views. Part of
-   * the label audit review: shown only while reviewing, gone when it stops.
+   * Epipolar lines of the selected keypoint's labels in the other views. Shown while
+   * reviewing the label audit ("Lines" in the review bar), and while labeling normally
+   * when "Epipolar lines" above the image is ticked.
    */
   private allEpipolarGuides = signal<EpipolarGuides | null>(null);
+  protected epipolarLinesWanted = computed(() =>
+    this.auditFocus()
+      ? this.viewOptions.showEpipolarLines()
+      : this.viewOptions.showEpipolarLinesWhileLabeling(),
+  );
   /** The guides with only the best `maxEpipolarLines` lines (the backend ranks them). */
   protected epipolarGuides = computed((): EpipolarGuides | null => {
     const guides = this.allEpipolarGuides();
-    if (!guides || !this.auditFocus()) return null;
+    if (!guides || !this.epipolarLinesWanted()) return null;
     const max = this.viewOptions.maxEpipolarLines();
     return { ...guides, lines: guides.lines.filter((l) => l.rank < max) };
   });
@@ -165,10 +171,11 @@ export class LabelerCenterPanelComponent implements OnChanges {
     const focus = this.auditFocus();
     const frame = this.frame();
     const keypoint = this.selectedKeypoint();
-    if (!guides || !focus || !frame || !keypoint) return [];
+    if (!guides || !this.epipolarLinesWanted() || !frame || !keypoint) return [];
     const own = this.labelsOf(frame, keypoint).find((l) => l.view === this.selectedView());
     if (!own) return [];
-    const tolerance = focus.finding.kind === 'shape' ? null : focus.finding.tolerancePx;
+    // Outside a review there is no tolerance to judge the distance by.
+    const tolerance = !focus || focus.finding.kind === 'shape' ? null : focus.finding.tolerancePx;
     return guides.lines
       .filter((l) => l.segments.length)
       .map((l) => {
@@ -432,10 +439,7 @@ export class LabelerCenterPanelComponent implements OnChanges {
       const frame = this.frame();
       const view = this.selectedView();
       const keypoint = this.selectedKeypoint();
-      const show =
-        !!this.auditFocus() &&
-        this.viewOptions.showEpipolarLines() &&
-        this.hasCameraCalibrationFiles();
+      const show = this.epipolarLinesWanted() && this.hasCameraCalibrationFiles();
       const size = this.primaryZoomableElement()?.imageSize() ?? null;
       untracked(() => {
         if (!show || !frame || !keypoint) {
