@@ -54,6 +54,12 @@ export class LabelAuditPanelComponent {
     this.audit.setMissing({ keypoint });
   }
 
+  /** Missing: look, or do not look, in one camera. */
+  protected setMissingView(view: string, on: boolean) {
+    const rest = this.audit.missingSkipViews().filter((v) => v !== view);
+    this.audit.setMissing({ skipViews: on ? rest : [...rest, view] });
+  }
+
   protected setMissingWhere(where: string) {
     this.audit.setMissing({ where: where as MissingWhere });
   }

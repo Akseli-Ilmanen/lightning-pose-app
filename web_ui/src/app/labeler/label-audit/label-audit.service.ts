@@ -46,24 +46,28 @@ export function midlineIsSet(choice: MidlineChoice, names: string[]): boolean {
 
 /**
  * One finding per frame where `keypoint` has no label: in at least one view ("any"), in
- * every view ("all"), or in some views but not all ("some"). Frame order.
+ * every view ("all"), or in some views but not all ("some"). Frame order. Views in
+ * `skipViews` are not looked at: "every view" then means every view that is looked at.
  */
 export function missingFindings(
   frames: MVFrame[],
   keypoint: string,
   where: MissingWhere,
+  skipViews: string[] = [],
 ): AuditFinding[] {
   if (!keypoint) return [];
   const out: AuditFinding[] = [];
   for (const frame of frames) {
-    const missing = frame.views
+    const looked = frame.views.filter((v) => !skipViews.includes(v.viewName));
+    const missing = looked
       .filter((v) => {
         const k = v.keypoints.find((kp) => kp.keypointName === keypoint);
         return !k || !Number.isFinite(k.x) || !Number.isFinite(k.y);
       })
       .map((v) => v.viewName);
-    const all = missing.length === frame.views.length;
+    const all = missing.length === looked.length;
     if (!missing.length || (where === 'all' && !all) || (where === 'some' && all)) continue;
+    const everyView = missing.length === frame.views.length && frame.views.length > 1;
     out.push({
       kind: 'missing',
       view: missing[0],
@@ -71,12 +75,12 @@ export function missingFindings(
       partner: null,
       imgPaths: Object.fromEntries(frame.views.map((v) => [v.viewName, v.imgPath])),
       errorPx: missing.length,
-      tolerancePx: frame.views.length,
-      score: missing.length / frame.views.length,
-      reason:
-        all && frame.views.length > 1
-          ? `${keypoint} is missing in every view`
-          : `${keypoint} is missing in ${missing.join(', ')}`,
+      tolerancePx: looked.length,
+      score: missing.length / looked.length,
+      reason: everyView
+        ? `${keypoint} is missing in every view`
+        : `${keypoint} is missing in ${missing.join(', ')}`,
+      missingIn: everyView ? 'every view' : missing.join(', '),
       frameKey: frame.key,
     });
   }
@@ -131,7 +135,7 @@ export class LabelAuditService {
   /** Findings of both audits, as the last check returned them. */
   readonly allFindings = signal<AuditFinding[]>([]);
   /** The audit shown: its settings, findings and review. */
-  readonly mode = signal<AuditMode>('views');
+  readonly mode = signal<AuditMode>('missing');
   /** Shape check: a distance this many spreads from its usual value counts as off. */
   readonly shapeStrictness = signal(DEFAULT_SHAPE_STRICTNESS);
   /**
@@ -154,6 +158,12 @@ export class LabelAuditService {
   readonly missingKeypoint = signal(this.stored('missing-keypoint'));
   readonly missingWhere = signal<MissingWhere>(
     (['any', 'all', 'some'] as const).find((w) => w === this.stored('missing-where')) ?? 'any',
+  );
+  /** Missing: cameras that are not looked at. Remembered per project. */
+  readonly missingSkipViews = signal<string[]>(
+    this.stored('missing-skip-views')
+      .split('\n')
+      .filter((v) => v.length > 0),
   );
   readonly missingCount = computed(() => this.countOf('missing'));
   /** The findings of the server and the frames of the last check, to list another keypoint's gaps. */
@@ -236,7 +246,12 @@ export class LabelAuditService {
       this.checkedFrames = frames;
       this.allFindings.set([
         ...findings,
-        ...missingFindings(frames, this.missingKeypoint(), this.missingWhere()),
+        ...missingFindings(
+          frames,
+          this.missingKeypoint(),
+          this.missingWhere(),
+          this.missingSkipViews(),
+        ),
       ]);
       this.unmatched.set(items.length - findings.length);
       this.summary.set(summary);
@@ -368,16 +383,23 @@ export class LabelAuditService {
    * Missing: another keypoint, or another rule for the views. The list follows at once, from
    * the frames as they were at the last check.
    */
-  setMissing(patch: { keypoint?: string; where?: MissingWhere }) {
+  setMissing(patch: { keypoint?: string; where?: MissingWhere; skipViews?: string[] }) {
     if (patch.keypoint !== undefined) this.missingKeypoint.set(patch.keypoint);
     if (patch.where !== undefined) this.missingWhere.set(patch.where);
+    if (patch.skipViews !== undefined) this.missingSkipViews.set(patch.skipViews);
+    this.store('missing-skip-views', this.missingSkipViews().join('\n'));
     this.store('missing-keypoint', this.missingKeypoint());
     this.store('missing-where', this.missingWhere());
     if (this.auditedLabelFileKey() === null) return;
     this.stopReview();
     this.allFindings.set([
       ...this.serverFindings,
-      ...missingFindings(this.checkedFrames, this.missingKeypoint(), this.missingWhere()),
+      ...missingFindings(
+        this.checkedFrames,
+        this.missingKeypoint(),
+        this.missingWhere(),
+        this.missingSkipViews(),
+      ),
     ]);
   }
 

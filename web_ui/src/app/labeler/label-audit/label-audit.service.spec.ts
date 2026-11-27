@@ -65,6 +65,7 @@ describe('LabelAuditService', () => {
       ],
     });
     service = TestBed.inject(LabelAuditService);
+    service.setMode('views'); // these specs are about the views check; the audit opens on Missing
   });
 
   const labelFile = {
@@ -233,6 +234,22 @@ describe('Label audit, missing keypoint', () => {
     expect(names('some')).toEqual(['img2', 'img4']);
   });
 
+  it('looks only in the cameras that are not left out', () => {
+    const inSide = missingFindings(frames, 'leftEar', 'any', ['top']);
+    expect(inSide.map((f) => f.frameKey.slice(-8, -4))).toEqual(['img2', 'img3']);
+    // img3 has it in no view, but only side was looked at.
+    expect(inSide.map((f) => [f.view, f.missingIn])).toEqual([['side', 'side'], ['side', 'side']]);
+    expect(missingFindings(frames, 'leftEar', 'any', ['top', 'side'])).toEqual([]);
+  });
+
+  it('"every view" and "some views" count the cameras looked at', () => {
+    expect(missingFindings(frames, 'leftEar', 'all', ['side']).map((f) => f.frameKey.slice(-8, -4))).toEqual([
+      'img3',
+      'img4',
+    ]);
+    expect(missingFindings(frames, 'leftEar', 'some', ['side'])).toEqual([]);
+  });
+
   it('lists nothing for a keypoint that is labeled everywhere, or when none is chosen', () => {
     expect(names('any', 'nose')).toEqual([]);
     expect(names('any', '')).toEqual([]);
@@ -270,6 +287,7 @@ describe('Label audit, missing keypoint', () => {
     beforeEach(() => {
       localStorage.removeItem('label-audit.missing-keypoint.proj');
       localStorage.removeItem('label-audit.missing-where.proj');
+      localStorage.removeItem('label-audit.missing-skip-views.proj');
       rpc = jasmine.createSpyObj('RpcService', ['call']);
       rpc.call.and.resolveTo({ items: [swap], framesChecked: 4, pointsChecked: 8, sessionsWithoutCalibration: [] });
       const projectInfo = jasmine.createSpyObj('ProjectInfoService', ['projectContext']);
@@ -287,6 +305,11 @@ describe('Label audit, missing keypoint', () => {
     afterEach(() => {
       localStorage.removeItem('label-audit.missing-keypoint.proj');
       localStorage.removeItem('label-audit.missing-where.proj');
+      localStorage.removeItem('label-audit.missing-skip-views.proj');
+    });
+
+    it('opens on Missing, the first of the checks', () => {
+      expect(service.mode()).toBe('missing');
     });
 
     it('lists nothing as missing until a keypoint is chosen', async () => {
@@ -302,6 +325,7 @@ describe('Label audit, missing keypoint', () => {
       await service.run(labelFile, frames);
 
       expect([service.viewsCount(), service.missingCount()]).toEqual([1, 3]);
+      service.setMode('views');
       expect(service.findings().map((f) => f.kind)).toEqual(['swap']);
       service.setMode('missing');
       expect(service.findings().map((f) => f.kind)).toEqual(['missing', 'missing', 'missing']);
@@ -332,6 +356,18 @@ describe('Label audit, missing keypoint', () => {
 
       expect(service.focus()?.finding.keypoint).toBe('leftEar');
       expect(service.visibleKeypoints()).toBeNull();
+    });
+
+    it('leaving out a camera updates the list at once and is remembered', async () => {
+      service.setMissing({ keypoint: 'leftEar' });
+      await service.run(labelFile, frames);
+      service.setMode('missing');
+
+      service.setMissing({ skipViews: ['top'] });
+
+      expect(service.findings().map((f) => f.frameKey)).toEqual([frames[1].key, frames[2].key]);
+      const again = TestBed.runInInjectionContext(() => new LabelAuditService());
+      expect(again.missingSkipViews()).toEqual(['top']);
     });
 
     it('remembers the keypoint for the project', () => {

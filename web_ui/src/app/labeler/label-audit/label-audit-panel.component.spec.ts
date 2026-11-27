@@ -41,6 +41,7 @@ describe('LabelAuditPanelComponent', () => {
       ],
     }).compileComponents();
     audit = TestBed.inject(LabelAuditService);
+    audit.setMode('views'); // these specs are about the views check; the panel opens on Missing
     fixture = TestBed.createComponent(LabelAuditPanelComponent);
     fixture.componentRef.setInput('labelFile', labelFile);
     fixture.componentRef.setInput('frames', [frame]);

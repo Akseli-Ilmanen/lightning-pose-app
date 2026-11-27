@@ -75,6 +75,8 @@ export interface LabelAuditItem {
   checkedPairs?: number;
   /** midline: errorPx and tolerancePx are degrees; group = [point, left, right]. */
   midline?: MidlineInfo | null;
+  /** missing: where it is missing, for the list ("every view", or the views). */
+  missingIn?: string;
 }
 
 /** A 3D arrangement of a rigid group that has its learned distances. */
