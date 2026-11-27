@@ -52,6 +52,7 @@ import { RpcService } from '../../rpc.service';
 import {
   AuditFocus,
   EpipolarGuides,
+  MidlineGuides,
   ShapeGuides,
   ShapePair,
 } from '../label-audit/label-audit.model';
@@ -136,14 +137,23 @@ export class LabelerCenterPanelComponent implements OnChanges {
   });
 
   /**
-   * Epipolar lines of the selected keypoint's labels in the other views. Part of
-   * the label audit review: shown only while reviewing, gone when it stops.
+   * Whether the epipolar lines are on: in the label audit review by its "Lines" switch,
+   * while labeling by the "Epipolar lines" switch of the keypoint tools. Needs a calibration.
    */
+  protected epipolarOn = computed(
+    () =>
+      this.hasCameraCalibrationFiles() &&
+      (this.auditFocus()
+        ? this.viewOptions.showEpipolarLines()
+        : this.viewOptions.showEpipolarLinesWhileLabeling()),
+  );
+
+  /** Epipolar lines of the selected keypoint's labels in the other views. */
   private allEpipolarGuides = signal<EpipolarGuides | null>(null);
   /** The guides with only the best `maxEpipolarLines` lines (the backend ranks them). */
   protected epipolarGuides = computed((): EpipolarGuides | null => {
     const guides = this.allEpipolarGuides();
-    if (!guides || !this.auditFocus()) return null;
+    if (!guides || !this.epipolarOn()) return null;
     const max = this.viewOptions.maxEpipolarLines();
     return { ...guides, lines: guides.lines.filter((l) => l.rank < max) };
   });
@@ -165,10 +175,15 @@ export class LabelerCenterPanelComponent implements OnChanges {
     const focus = this.auditFocus();
     const frame = this.frame();
     const keypoint = this.selectedKeypoint();
-    if (!guides || !focus || !frame || !keypoint) return [];
+    if (!guides || !this.epipolarOn() || !frame || !keypoint) return [];
     const own = this.labelsOf(frame, keypoint).find((l) => l.view === this.selectedView());
     if (!own) return [];
-    const tolerance = focus.finding.kind === 'shape' ? null : focus.finding.tolerancePx;
+    // Only the views audit has a tolerance in pixels.
+    const kind = focus?.finding.kind;
+    const tolerance =
+      !focus || kind === 'shape' || kind === 'midline' || kind === 'missing'
+        ? null
+        : focus.finding.tolerancePx;
     return guides.lines
       .filter((l) => l.segments.length)
       .map((l) => {
@@ -178,8 +193,12 @@ export class LabelerCenterPanelComponent implements OnChanges {
       .filter((d) => Number.isFinite(d.px));
   });
 
-  /** The rigid group measured with the labels on screen, for the finding and frame of `key`. */
-  private liveShape = signal<{ key: string; guides: ShapeGuides } | null>(null);
+  /**
+   * The rigid groups measured with the labels on screen, per finding and frame (`shapeKey`).
+   * Kept for the whole review, so going back to a finding shows its last measurement and
+   * not the numbers of the check.
+   */
+  private liveShape = signal<ReadonlyMap<string, ShapeGuides>>(new Map());
   private shapeRequest = 0;
   private shapeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Edit counter value when the reviewed finding opened: no refit before the first edit. */
@@ -193,8 +212,8 @@ export class LabelerCenterPanelComponent implements OnChanges {
     return frame.key === focus.finding.frameKey ? `${focus.index}|${frame.key}` : null;
   });
   private currentShape = computed(() => {
-    const live = this.liveShape();
-    return live && live.key === this.shapeKey() ? live.guides : null;
+    const key = this.shapeKey();
+    return key ? (this.liveShape().get(key) ?? null) : null;
   });
   /** True while the distances are being measured again after an edit. */
   protected shapeRefitting = signal(false);
@@ -202,7 +221,8 @@ export class LabelerCenterPanelComponent implements OnChanges {
   /** The pairs of the reviewed rigid group: of the last check, or measured again after an edit. */
   protected shapePairs = computed<ShapePair[]>(() => {
     const finding = this.auditFocus()?.finding;
-    if (!finding || finding.kind !== 'shape') return [];
+    // Not while another frame than the finding's is on screen: the distances are not its.
+    if (!finding || finding.kind !== 'shape' || !this.shapeKey()) return [];
     return this.currentShape()?.groupPairs ?? finding.groupPairs ?? [];
   });
 
@@ -267,6 +287,54 @@ export class LabelerCenterPanelComponent implements OnChanges {
   protected shapeStatus = computed(() => this.shapeReadout() ?? this.shapeFlagged());
 
   protected readonly shapeColor = (long: boolean) => (long ? '#ef4444' : '#38bdf8');
+  protected readonly abs = Math.abs;
+
+  /** The reviewed midline finding measured with the labels on screen, for the finding of `key`. */
+  private liveMidline = signal<{ key: string; guides: MidlineGuides | null } | null>(null);
+  private midlineRequest = 0;
+  private midlineKey = computed(() => {
+    const focus = this.auditFocus();
+    const frame = this.frame();
+    if (!focus || focus.finding.kind !== 'midline' || !frame) return null;
+    return frame.key === focus.finding.frameKey ? `${focus.index}|${frame.key}` : null;
+  });
+  private currentMidline = computed(() => {
+    const live = this.liveMidline();
+    return live && live.key === this.midlineKey() ? live : null;
+  });
+
+  /** The midline and the other views' suggestion in the shown view, in image pixels. */
+  protected midlineGuide = computed(() => {
+    const guide = this.currentMidline()?.guides?.views.find((v) => v.view === this.selectedView());
+    if (!guide) return null;
+    return { points: guide.line.map((p) => `${p.x},${p.y}`).join(' '), suggestion: guide.suggestion };
+  });
+
+  /**
+   * For the review bar: the angle off the midline now (of the last check until the first
+   * measurement arrives), and the left-right distance against usual.
+   */
+  protected midlineStatus = computed(() => {
+    const finding = this.auditFocus()?.finding;
+    if (!finding || finding.kind !== 'midline' || !this.midlineKey()) return null;
+    const live = this.currentMidline();
+    const info = live ? (live.guides?.info ?? null) : (finding.midline ?? null);
+    const [point, left, right] = finding.group ?? [];
+    const yaw = info?.yawDeg ?? null;
+    const usual = finding.midline?.widthUsual ?? null;
+    const width = info?.width ?? null;
+    return {
+      point,
+      left,
+      right,
+      yaw,
+      towards: yaw === null ? '' : yaw > 0 ? right : left,
+      ok: yaw === null ? null : Math.abs(yaw) <= finding.tolerancePx,
+      limit: finding.tolerancePx,
+      off: info?.off ?? null,
+      widthPercent: usual && width !== null ? (100 * width) / usual : null,
+    };
+  });
 
   /** Three significant digits: distances are in calibration units of unknown size. */
   protected sig(x: number | null): string {
@@ -399,6 +467,8 @@ export class LabelerCenterPanelComponent implements OnChanges {
       untracked(() => {
         if (this.shapeTimer) clearTimeout(this.shapeTimer);
         const service = this.auditService;
+        // The review stopped: its measurements go (finding numbers start again at 0).
+        if (!focus && this.liveShape().size) this.liveShape.set(new Map());
         if (!key || !frame || !focus || !service) {
           this.shapeOpened = null;
           this.shapeRefitting.set(false);
@@ -415,7 +485,8 @@ export class LabelerCenterPanelComponent implements OnChanges {
         this.shapeTimer = setTimeout(async () => {
           try {
             const guides = await service.shapeGuides(frame, focus.finding.keypoint);
-            if (request === this.shapeRequest && guides) this.liveShape.set({ key, guides });
+            // By key, so a late answer never lands on another finding.
+            if (guides) this.liveShape.update((all) => new Map(all).set(key, guides));
           } catch (e) {
             // The distances of the last check stay: a help, not essential.
             console.error('Shape refit failed', e);
@@ -426,16 +497,37 @@ export class LabelerCenterPanelComponent implements OnChanges {
       });
     });
 
+    // The midline follows the edits: measured when the finding opens and after every edit,
+    // with the unsaved labels.
+    effect(() => {
+      this.cacheBuster(); // a keypoint moved
+      const key = this.midlineKey();
+      const frame = this.frame();
+      const focus = this.auditFocus();
+      untracked(() => {
+        const request = ++this.midlineRequest;
+        const service = this.auditService;
+        const sessionKey = frame ? mvf(frame).autolabelSessionKey : null;
+        if (!key || !frame || !focus || !service || !sessionKey) return;
+        service
+          .midlineGuides(frame, sessionKey, focus.finding.group ?? [])
+          .then((guides) => {
+            if (request === this.midlineRequest) this.liveMidline.set({ key, guides });
+          })
+          .catch((e) => {
+            // The numbers of the last check stay: a help, not essential.
+            console.error('Midline guides failed', e);
+          });
+      });
+    });
+
     // Epipolar guides follow the selected keypoint, view and its labels.
     effect(() => {
       this.cacheBuster(); // a keypoint moved
       const frame = this.frame();
       const view = this.selectedView();
       const keypoint = this.selectedKeypoint();
-      const show =
-        !!this.auditFocus() &&
-        this.viewOptions.showEpipolarLines() &&
-        this.hasCameraCalibrationFiles();
+      const show = this.epipolarOn();
       const size = this.primaryZoomableElement()?.imageSize() ?? null;
       untracked(() => {
         if (!show || !frame || !keypoint) {

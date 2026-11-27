@@ -1,8 +1,57 @@
 /** Wire types of getLabelAudit and getEpipolarGuides (routes/labeler/label_audit.py). */
 
-export type LabelAuditKind = 'multiview' | 'swap' | 'shape';
-/** The two audits: "views" (the cameras disagree, swaps) and "shape" (off a rigid group). */
-export type AuditMode = 'views' | 'shape';
+export type LabelAuditKind = 'multiview' | 'swap' | 'shape' | 'midline' | 'missing';
+/**
+ * The audits: "views" (the cameras disagree, swaps), "shape" (off a rigid group),
+ * "midline" (a keypoint off the midplane of a left and a right keypoint) and "missing"
+ * (every frame where a chosen keypoint has no label; found in the browser, not by the server).
+ */
+export type AuditMode = 'views' | 'shape' | 'midline' | 'missing';
+/** Missing: in which frames the keypoint counts as missing. */
+export type MissingWhere = 'any' | 'all' | 'some';
+
+/**
+ * What is checked: the saved labels, or the frames still in the unlabeled queue with the
+ * model predictions they were queued with.
+ */
+export type AuditScope = 'labeled' | 'queue';
+
+/** The audit a finding belongs to. */
+export function auditModeOf(kind: LabelAuditKind): AuditMode {
+  return kind === 'shape' || kind === 'midline' || kind === 'missing' ? kind : 'views';
+}
+
+/** A keypoint on the midline between a left and a right keypoint, and the allowed angle. */
+export interface MidlineChoice {
+  left: string;
+  right: string;
+  point: string;
+  toleranceDeg: number;
+}
+
+/** One frame's midline keypoint against the midplane of left and right (3D). */
+export interface MidlineInfo {
+  /** Angle between the axis midpoint -> point and the midplane; positive = towards `right`. */
+  yawDeg: number | null;
+  /** Distance from the midplane, and distance to left minus distance to right (calibration units). */
+  off: number | null;
+  asymmetry: number | null;
+  /** Distance left-right, and its median over the animal's (or all) frames. */
+  width: number | null;
+  widthUsual?: number | null;
+}
+
+/** The midline of one frame with its labels as they are on screen (getMidlineGuides). */
+export interface MidlineGuides {
+  views: {
+    view: string;
+    /** The midline in this view, in image pixels. */
+    line: GuidePoint[];
+    /** Where the other views put the point on the midplane. */
+    suggestion: GuidePoint | null;
+  }[];
+  info: MidlineInfo | null;
+}
 
 export interface LabelAuditItem {
   kind: LabelAuditKind;
@@ -24,6 +73,8 @@ export interface LabelAuditItem {
   /** shape: how many of the keypoint's measurable distances are off. */
   offPairs?: number;
   checkedPairs?: number;
+  /** midline: errorPx and tolerancePx are degrees; group = [point, left, right]. */
+  midline?: MidlineInfo | null;
 }
 
 /** A 3D arrangement of a rigid group that has its learned distances. */
@@ -68,6 +119,12 @@ export interface GetLabelAuditResponse {
   shapeUnmatchedSessions?: string[];
   /** One 3D arrangement per rigid group and animal, to draw it. */
   shapeTemplates?: ShapeTemplate[];
+  /** Midline: frames measured, frames with the point but no midplane, and why it did not run. */
+  midlineChecked?: number;
+  midlineNoGuide?: number;
+  midlineProblems?: string[];
+  /** Queue scope: the queue frames (image path per view) that were checked and have no finding. */
+  cleanFrames?: Record<string, string>[];
 }
 
 export interface GuidePoint {

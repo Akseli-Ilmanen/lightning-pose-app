@@ -108,6 +108,8 @@
               <app-label-audit-panel
                 [labelFile]="loadedLabelFile()"
                 [frames]="labelFileDataLabeledSlice()"
+                [queueFrames]="labelFileDataUnLabeledSlice()"
+                (approve)="handleApproveQueueFrames($event)"
               />
             </div>
           }

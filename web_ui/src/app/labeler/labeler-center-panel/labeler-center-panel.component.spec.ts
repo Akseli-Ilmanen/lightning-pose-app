@@ -10,7 +10,9 @@ import { MVFrame } from '../frame.model';
 import { ContextSlotView } from '../temporal-context';
 import { LabelerViewOptionsService } from '../labeler-view-options.service';
 import { SessionService } from '../../session.service';
-import { AuditFocus } from '../label-audit/label-audit.model';
+import { RpcService } from '../../rpc.service';
+import { AuditFocus, ShapeGuides, ShapePair } from '../label-audit/label-audit.model';
+import { LabelAuditService } from '../label-audit/label-audit.service';
 
 describe('LabelerCenterPanelComponent temporal context', () => {
   let fixture: ComponentFixture<LabelerCenterPanelComponent>;
@@ -946,6 +948,424 @@ describe('LabelerCenterPanelComponent label audit review', () => {
 
 });
 
+describe('LabelerCenterPanelComponent distances of a rigid group in the review', () => {
+  let fixture: ComponentFixture<LabelerCenterPanelComponent>;
+  let auditService: jasmine.SpyObj<LabelAuditService>;
+  const VIEWS = ['top', 'side'];
+  const NAMES = ['nose', 'leftEar', 'rightEar'];
+
+  /** A new frame each time: edits change the frame object. */
+  function frameOf(img: string): MVFrame {
+    return {
+      key: `labeled-data/s_*/${img}.png`,
+      views: VIEWS.map((viewName) => {
+        const keypoints = NAMES.map((keypointName, i) => ({ keypointName, x: 10 * i, y: 10 * i }));
+        return {
+          viewName,
+          imgPath: `labeled-data/s_${viewName}/${img}.png`,
+          keypoints,
+          originalKeypoints: keypoints,
+        };
+      }),
+    };
+  }
+
+  /** The pairs of the group with leftEar to nose at `percent` of its usual distance (10). */
+  function pairs(percent: number): ShapePair[] {
+    const pair = (a: string, b: string, distance: number): ShapePair => ({
+      a,
+      b,
+      usual: 10,
+      spread: 0.5,
+      limit: 1.5,
+      frames: 50,
+      distance,
+      off: Math.abs(distance - 10) > 1.5,
+    });
+    return [pair('nose', 'leftEar', percent / 10), pair('nose', 'rightEar', 10), pair('leftEar', 'rightEar', 10)];
+  }
+
+  function focusOn(frame: MVFrame, index: number, percent: number): AuditFocus {
+    return {
+      index,
+      total: 3,
+      finding: {
+        kind: 'shape',
+        view: 'top',
+        keypoint: 'leftEar',
+        partner: null,
+        imgPaths: { top: frame.views[0].imgPath, side: frame.views[1].imgPath },
+        errorPx: 5,
+        tolerancePx: 1.5,
+        score: 3,
+        reason: 'leftEar to nose too long',
+        group: NAMES,
+        groupPairs: pairs(percent),
+        frameKey: frame.key,
+      },
+    };
+  }
+
+  beforeEach(async () => {
+    const projectInfo = jasmine.createSpyObj('ProjectInfoService', ['projectContext'], {
+      projectInfo: { data_dir: 'data', views: VIEWS },
+    });
+    projectInfo.projectContext.and.returnValue(null);
+    const calibration = jasmine.createSpyObj('CameraCalibrationService', ['getCalibrationStatus']);
+    calibration.getCalibrationStatus.and.resolveTo('none');
+    auditService = jasmine.createSpyObj('LabelAuditService', ['shapeGuides', 'midlineGuides']);
+    auditService.shapeGuides.and.resolveTo({ group: NAMES, groupPairs: pairs(100) });
+
+    await TestBed.configureTestingModule({
+      imports: [LabelerCenterPanelComponent],
+      providers: [
+        { provide: ProjectInfoService, useValue: projectInfo },
+        { provide: CameraCalibrationService, useValue: calibration },
+        { provide: SessionService, useValue: jasmine.createSpyObj('SessionService', ['saveMVFrame']) },
+        { provide: LabelAuditService, useValue: auditService },
+      ],
+    })
+      .overrideComponent(LabelerCenterPanelComponent, {
+        remove: { imports: [ImageLabelWidgetComponent] },
+        add: { imports: [ImageLabelWidgetStubComponent] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(LabelerCenterPanelComponent);
+    fixture.componentRef.setInput('numLabeledFramesGetter', () => 0);
+    fixture.componentRef.setInput('labelFile', {
+      key: 'CollectedData',
+      views: VIEWS.map((v) => ({ viewName: v, csvPath: `CollectedData_${v}.csv` })),
+    });
+  });
+
+  function mainWidget(): ImageLabelWidgetStubComponent {
+    return fixture.debugElement.queryAll(By.directive(ImageLabelWidgetStubComponent))[0]
+      .componentInstance;
+  }
+
+  /** The distances in the review bar, or null when none are shown. */
+  function distances(): string | null {
+    const el = fixture.nativeElement.querySelector('[data-testid="audit-shape-reason"]');
+    return el ? (el.textContent as string).replace(/\s+/g, ' ').trim() : null;
+  }
+
+  /** Opens a finding as the page does: its frame and the focus. */
+  function open(frame: MVFrame, index: number, percent: number) {
+    fixture.componentRef.setInput('frame', frame);
+    fixture.componentRef.setInput('auditFocus', focusOn(frame, index, percent));
+    fixture.detectChanges();
+  }
+
+  /** Lets the measurement after an edit come back and be drawn. */
+  async function settle() {
+    fixture.detectChanges();
+    // Twice: the request starts in a timer, its answer arrives in a later task.
+    for (let i = 0; i < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      fixture.detectChanges();
+    }
+  }
+
+  /** The user drags leftEar in the shown view. */
+  async function moveLeftEar() {
+    mainWidget().keypointUpdated.emit({ kp: 'leftEar', position: { x: 3, y: 4 } });
+    await settle();
+  }
+
+  it('shows the distances of the check when a finding opens, without measuring', () => {
+    open(frameOf('img01'), 0, 150);
+
+    expect(distances()).toContain('leftEar to nose too long (150% of usual)');
+    expect(auditService.shapeGuides).not.toHaveBeenCalled();
+  });
+
+  it('measures again after an edit, with the frame on screen, and shows the new distances', async () => {
+    const frame = frameOf('img01');
+    open(frame, 0, 150);
+
+    await moveLeftEar();
+
+    expect(auditService.shapeGuides).toHaveBeenCalledOnceWith(frame, 'leftEar');
+    expect(distances()).toContain('leftEar: all distances as usual');
+  });
+
+  it('shows the distances of the next finding, not the measurement of the one before', async () => {
+    open(frameOf('img01'), 0, 150);
+    await moveLeftEar();
+
+    open(frameOf('img02'), 1, 200);
+
+    expect(distances()).toContain('leftEar to nose too long (200% of usual)');
+  });
+
+  it('shows the distances of the next finding when it is in the same frame', async () => {
+    const frame = frameOf('img01');
+    open(frame, 0, 150);
+    await moveLeftEar();
+
+    open(frame, 1, 50);
+
+    expect(distances()).toContain('leftEar to nose too short (50% of usual)');
+  });
+
+  it('measures the frame on screen after stepping to another finding', async () => {
+    open(frameOf('img01'), 0, 150);
+    await moveLeftEar();
+    const second = frameOf('img02');
+    open(second, 1, 200);
+    auditService.shapeGuides.calls.reset();
+
+    await moveLeftEar();
+
+    expect(auditService.shapeGuides).toHaveBeenCalledOnceWith(second, 'leftEar');
+    expect(distances()).toContain('leftEar: all distances as usual');
+  });
+
+  it('going back to a finding shows its last measurement, not the numbers of the check', async () => {
+    const first = frameOf('img01');
+    open(first, 0, 150);
+    await moveLeftEar(); // as usual now
+    open(frameOf('img02'), 1, 200);
+    auditService.shapeGuides.and.resolveTo({ group: NAMES, groupPairs: pairs(50) });
+    await moveLeftEar();
+    expect(distances()).toContain('too short (50% of usual)');
+
+    open(first, 0, 150);
+
+    expect(distances()).toContain('leftEar: all distances as usual');
+  });
+
+  it('a late answer for the finding before does not change the one on screen', async () => {
+    let answer: (guides: ShapeGuides) => void = () => undefined;
+    auditService.shapeGuides.and.returnValue(new Promise((resolve) => (answer = resolve)));
+    open(frameOf('img01'), 0, 150);
+    await moveLeftEar(); // asked, not answered yet
+
+    open(frameOf('img02'), 1, 200);
+    answer({ group: NAMES, groupPairs: pairs(100) });
+    await settle();
+
+    expect(distances()).toContain('leftEar to nose too long (200% of usual)');
+    expect(fixture.nativeElement.querySelector('[data-testid="shape-refit-state"]')).toBeNull();
+  });
+
+  it('shows no distances of the finding while another frame is on screen', () => {
+    const first = frameOf('img01');
+    open(first, 0, 150);
+
+    // The frame changed, the finding has not followed yet.
+    fixture.componentRef.setInput('frame', frameOf('img02'));
+    fixture.detectChanges();
+
+    expect(distances()).toBeNull();
+    expect(mainWidget().shapeLines()).toEqual([]);
+  });
+
+  it('shows the distances of the keypoint that is selected', () => {
+    open(frameOf('img01'), 0, 150);
+
+    mainWidget().selectedKeypoint.set('rightEar');
+    fixture.detectChanges();
+
+    expect(distances()).toContain('rightEar: all distances as usual');
+  });
+
+  it('draws a line per measured pair and marks the ones that are off', async () => {
+    open(frameOf('img01'), 0, 150);
+    expect(mainWidget().shapeLines().map((l) => [l.name, l.off])).toEqual([
+      ['nose|leftEar', 'long'],
+      ['nose|rightEar', null],
+      ['leftEar|rightEar', null],
+    ]);
+
+    await moveLeftEar();
+
+    expect(mainWidget().shapeLines().map((l) => l.off)).toEqual([null, null, null]);
+  });
+
+  it('forgets the measurements when the review stops', async () => {
+    const frame = frameOf('img01');
+    open(frame, 0, 150);
+    await moveLeftEar();
+    expect(distances()).toContain('all distances as usual');
+
+    fixture.componentRef.setInput('auditFocus', null);
+    fixture.detectChanges();
+    expect(distances()).toBeNull();
+    // A new check numbers its findings from 0 again.
+    open(frame, 0, 150);
+
+    expect(distances()).toContain('leftEar to nose too long (150% of usual)');
+  });
+});
+
+describe('LabelerCenterPanelComponent epipolar lines while labeling', () => {
+  let fixture: ComponentFixture<LabelerCenterPanelComponent>;
+  let rpc: jasmine.SpyObj<RpcService>;
+  let viewOptions: LabelerViewOptionsService;
+  const VIEWS = ['top', 'side'];
+  const GUIDES = {
+    lines: [{ fromView: 'side', segments: [[{ x: 0, y: 0 }, { x: 10, y: 0 }]], rank: 0, crossingAngleDeg: null }],
+    predictedPoint: null,
+    predictedFromViews: [],
+  };
+
+  /** `saved`: a labeled frame; else a frame of the queue, with its predictions. */
+  function frameOf(saved: boolean): MVFrame {
+    return {
+      key: 'labeled-data/s_*/img01.png',
+      views: VIEWS.map((viewName) => {
+        const keypoints = [{ keypointName: 'nose', x: 3, y: 4 }];
+        return {
+          viewName,
+          imgPath: `labeled-data/s_${viewName}/img01.png`,
+          keypoints,
+          originalKeypoints: saved ? keypoints : null,
+        };
+      }),
+    };
+  }
+
+  async function setUp(calibration: 'session' | 'none', on: boolean) {
+    localStorage.setItem('labeler-view-options.showEpipolarLinesWhileLabeling', String(on));
+    const projectInfo = jasmine.createSpyObj('ProjectInfoService', ['projectContext'], {
+      projectInfo: { data_dir: 'data', views: VIEWS },
+    });
+    projectInfo.projectContext.and.returnValue({ key: 'proj', projectInfo: { views: VIEWS } });
+    const calibrationService = jasmine.createSpyObj('CameraCalibrationService', ['getCalibrationStatus']);
+    calibrationService.getCalibrationStatus.and.resolveTo(calibration);
+    rpc = jasmine.createSpyObj('RpcService', ['call']);
+    rpc.call.and.resolveTo(GUIDES);
+
+    await TestBed.configureTestingModule({
+      imports: [LabelerCenterPanelComponent],
+      providers: [
+        { provide: ProjectInfoService, useValue: projectInfo },
+        { provide: CameraCalibrationService, useValue: calibrationService },
+        { provide: SessionService, useValue: jasmine.createSpyObj('SessionService', ['saveMVFrame']) },
+        { provide: RpcService, useValue: rpc },
+      ],
+    })
+      .overrideComponent(LabelerCenterPanelComponent, {
+        remove: { imports: [ImageLabelWidgetComponent] },
+        add: { imports: [ImageLabelWidgetStubComponent] },
+      })
+      .compileComponents();
+
+    fixture = TestBed.createComponent(LabelerCenterPanelComponent);
+    // Provided by the component, not the root.
+    viewOptions = fixture.debugElement.injector.get(LabelerViewOptionsService);
+    fixture.componentRef.setInput('numLabeledFramesGetter', () => 0);
+    fixture.componentRef.setInput('labelFile', {
+      key: 'CollectedData',
+      views: VIEWS.map((v) => ({ viewName: v, csvPath: `CollectedData_${v}.csv` })),
+    });
+  }
+
+  afterEach(() => localStorage.removeItem('labeler-view-options.showEpipolarLinesWhileLabeling'));
+
+  async function show(frame: MVFrame) {
+    fixture.componentRef.setInput('frame', frame);
+    fixture.detectChanges();
+    // The user clicks the keypoint (a saved frame opens with none selected).
+    mainWidget().selectedKeypoint.set('nose');
+    for (let i = 0; i < 3; i++) {
+      fixture.detectChanges();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    fixture.detectChanges();
+  }
+
+  function mainWidget(): ImageLabelWidgetStubComponent {
+    return fixture.debugElement.queryAll(By.directive(ImageLabelWidgetStubComponent))[0]
+      .componentInstance;
+  }
+
+  function toggle(): HTMLInputElement | null {
+    return fixture.nativeElement.querySelector('input[aria-label="Show epipolar lines while labeling"]');
+  }
+
+  function guideCalls() {
+    return rpc.call.calls.all().filter((c) => c.args[0] === 'getEpipolarGuides');
+  }
+
+  it('draws no lines while labeling until they are switched on', async () => {
+    await setUp('session', false);
+    await show(frameOf(true));
+
+    expect(toggle()!.checked).toBeFalse();
+    expect(mainWidget().epipolarGuides()).toBeNull();
+    expect(guideCalls().length).toBe(0);
+  });
+
+  it('draws the lines of the selected keypoint on a saved frame, outside a review', async () => {
+    await setUp('session', true);
+    await show(frameOf(true));
+
+    expect(guideCalls().length).toBeGreaterThan(0);
+    expect(guideCalls()[0].args[1]).toEqual(jasmine.objectContaining({ sessionKey: 's', targetView: 'top' }));
+    expect(mainWidget().epipolarGuides()).toEqual(GUIDES);
+  });
+
+  it('draws them on a frame of the queue too', async () => {
+    await setUp('session', true);
+    await show(frameOf(false));
+
+    expect(mainWidget().epipolarGuides()).toEqual(GUIDES);
+  });
+
+  it('says how far the label is from the line, without a tolerance', async () => {
+    await setUp('session', true);
+    await show(frameOf(true));
+
+    const distance = fixture.nativeElement.querySelector('[data-testid="line-distance"]');
+    expect(distance.textContent).toContain('4 px from the side line');
+    expect(distance.textContent).not.toContain('✓');
+  });
+
+  it('the switch turns the lines on and off', async () => {
+    await setUp('session', false);
+    await show(frameOf(true));
+
+    toggle()!.click();
+    await show(frameOf(true));
+    expect(viewOptions.showEpipolarLinesWhileLabeling()).toBeTrue();
+    expect(mainWidget().epipolarGuides()).toEqual(GUIDES);
+
+    toggle()!.click();
+    await show(frameOf(true));
+    expect(mainWidget().epipolarGuides()).toBeNull();
+  });
+
+  it('has no switch and no lines without a camera calibration', async () => {
+    await setUp('none', true);
+    await show(frameOf(true));
+
+    expect(toggle()).toBeNull();
+    expect(mainWidget().epipolarGuides()).toBeNull();
+    expect(guideCalls().length).toBe(0);
+  });
+
+  it('in a review the review\'s own switch decides, not this one', async () => {
+    await setUp('session', false);
+    const frame = frameOf(true);
+    fixture.componentRef.setInput('auditFocus', {
+      index: 0,
+      total: 1,
+      finding: {
+        kind: 'multiview', view: 'top', keypoint: 'nose', partner: null,
+        imgPaths: { top: frame.views[0].imgPath, side: frame.views[1].imgPath },
+        errorPx: 20, tolerancePx: 5, score: 4, reason: 'off', frameKey: frame.key,
+      },
+    });
+    await show(frame);
+
+    expect(toggle()).toBeNull();
+    expect(mainWidget().epipolarGuides()).toEqual(GUIDES);
+  });
+});
+
 @Component({ selector: 'app-image-label-widget', template: '' })
 class ImageLabelWidgetStubComponent {
   fv = input();
@@ -956,6 +1376,8 @@ class ImageLabelWidgetStubComponent {
   zoomableInteractivityDisabled = input();
   visibleKeypoints = input<string[] | null>(null);
   epipolarGuides = input<unknown>(null);
+  shapeLines = input<{ name: string; off: string | null; main: boolean }[]>([]);
+  midlineGuide = input<unknown>(null);
   guideViews = input<string[]>([]);
   keypointUpdated = output<unknown>();
   zoomableContent = () => null;

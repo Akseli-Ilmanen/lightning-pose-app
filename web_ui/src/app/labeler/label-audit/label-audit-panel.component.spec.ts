@@ -15,8 +15,9 @@ describe('LabelAuditPanelComponent', () => {
     views: ['top', 'side'].map((viewName) => ({
       viewName,
       imgPath: `labeled-data/s_${viewName}/img01.png`,
-      keypoints: [],
-      originalKeypoints: [],
+      // The check needs a ticked keypoint; the names come from the first frame.
+      keypoints: [{ keypointName: 'leftEar', x: 1, y: 1 }],
+      originalKeypoints: [{ keypointName: 'leftEar', x: 1, y: 1 }],
     })),
   };
   const labelFile = {

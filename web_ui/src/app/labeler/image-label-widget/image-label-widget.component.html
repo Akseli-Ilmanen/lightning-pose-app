@@ -59,6 +59,36 @@
         }
       </svg>
     }
+    @if (!viewOptions.isShowingTemporalContext() && midlineGuide(); as mg) {
+      <!-- Midline of the reviewed frame (yellow) and the other views' point on it (cyan). Never clickable. -->
+      <svg
+        class="absolute inset-0 w-full h-full pointer-events-none overflow-hidden"
+        data-testid="midline-guide"
+        aria-hidden="true"
+      >
+        <polyline
+          [attr.points]="mg.points"
+          fill="none"
+          stroke="#facc15"
+          stroke-width="1.25"
+          stroke-dasharray="5 3"
+          vector-effect="non-scaling-stroke"
+          stroke-opacity="0.9"
+        />
+        @if (mg.suggestion; as p) {
+          <g data-testid="midline-suggestion">
+            <line
+              [attr.x1]="p.x - 5" [attr.y1]="p.y - 5" [attr.x2]="p.x + 5" [attr.y2]="p.y + 5"
+              stroke="#22d3ee" stroke-width="2" vector-effect="non-scaling-stroke"
+            />
+            <line
+              [attr.x1]="p.x - 5" [attr.y1]="p.y + 5" [attr.x2]="p.x + 5" [attr.y2]="p.y - 5"
+              stroke="#22d3ee" stroke-width="2" vector-effect="non-scaling-stroke"
+            />
+          </g>
+        }
+      </svg>
+    }
     @if (!viewOptions.isShowingTemporalContext() && epipolarGuides(); as guides) {
       <!-- Epipolar guides in image pixels, under the pointer so clicks still place keypoints. -->
       <svg

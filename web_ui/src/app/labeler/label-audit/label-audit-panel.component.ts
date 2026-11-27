@@ -4,6 +4,7 @@ import {
   computed,
   inject,
   input,
+  output,
 } from '@angular/core';
 import { DecimalPipe, PercentPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -13,9 +14,11 @@ import {
   keypointNamesOf,
   LabelAuditService,
   MAX_RIGID_GROUPS,
+  midlineChoiceFor,
+  midlineIsSet,
   rigidGroupsOf,
 } from './label-audit.service';
-import { AuditFinding, ShapeTemplate } from './label-audit.model';
+import { AuditFinding, AuditScope, MissingWhere, ShapeTemplate } from './label-audit.model';
 import { ShapeTemplateViewComponent } from './shape-template-view.component';
 
 /**
@@ -34,8 +37,30 @@ export class LabelAuditPanelComponent {
   labelFile = input<MVLabelFile | null>(null);
   /** Labeled frames of the open label file. */
   frames = input<MVFrame[]>([]);
+  /** Frames of the open label file still in the unlabeled queue, with their predictions. */
+  queueFrames = input<MVFrame[]>([]);
+  /** Keys of queue frames to save as they are (the ones the check found nothing in). */
+  approve = output<string[]>();
 
-  protected keypointNames = computed(() => keypointNamesOf(this.frames()));
+  /** The frames the check runs on. */
+  protected scopeFrames = computed(() =>
+    this.audit.scope() === 'queue' ? this.queueFrames() : this.frames(),
+  );
+  protected keypointNames = computed(() =>
+    keypointNamesOf(this.frames().length ? this.frames() : this.queueFrames()),
+  );
+
+  protected setMissingKeypoint(keypoint: string) {
+    this.audit.setMissing({ keypoint });
+  }
+
+  protected setMissingWhere(where: string) {
+    this.audit.setMissing({ where: where as MissingWhere });
+  }
+
+  protected setScope(scope: string) {
+    this.audit.setScope(scope as AuditScope);
+  }
   protected groupNumbers = Array.from({ length: MAX_RIGID_GROUPS }, (_, i) => i + 1);
   protected checkedCount = computed(
     () => this.keypointNames().filter((n) => !this.audit.choices().unchecked.includes(n)).length,
@@ -44,12 +69,31 @@ export class LabelAuditPanelComponent {
     () => rigidGroupsOf(this.audit.choices().groups, this.keypointNames()).length,
   );
 
+  /** The midline keypoints as chosen, empty ones guessed from the keypoint names. */
+  protected midline = computed(() => midlineChoiceFor(this.audit.midline(), this.keypointNames()));
+  protected midlineSet = computed(() => midlineIsSet(this.midline(), this.keypointNames()));
+  protected readonly midlineFields: { key: 'left' | 'right' | 'point'; label: string }[] = [
+    { key: 'left', label: 'Left keypoint' },
+    { key: 'right', label: 'Right keypoint' },
+    { key: 'point', label: 'Midline keypoint' },
+  ];
+
+  protected setMidlineKeypoint(key: 'left' | 'right' | 'point', name: string) {
+    // Keep what was guessed, so a choice in one field does not empty the others.
+    this.audit.setMidline({ ...this.midline(), [key]: name });
+  }
+
+  protected onMidlineTolerance(value: number | string) {
+    const v = Number(value);
+    if (Number.isFinite(v) && v > 0) this.audit.setMidline({ ...this.midline(), toleranceDeg: v });
+  }
+
   protected canRun = computed(
     () =>
       this.checkedCount() > 0 &&
       !!this.labelFile() &&
       (this.labelFile()?.views.length ?? 0) >= 2 &&
-      this.frames().length > 0 &&
+      this.scopeFrames().length > 0 &&
       !this.audit.isRunning(),
   );
 
@@ -57,7 +101,11 @@ export class LabelAuditPanelComponent {
     const lf = this.labelFile();
     if (!lf) return 'Open a label file first.';
     if (lf.views.length < 2) return 'The audit needs a multiview label file.';
-    if (!this.frames().length) return 'This label file has no labeled frames.';
+    if (!this.scopeFrames().length) {
+      return this.audit.scope() === 'queue'
+        ? 'No frames are waiting to be labeled.'
+        : 'This label file has no labeled frames.';
+    }
     if (!this.checkedCount()) return 'Tick at least one keypoint.';
     if (this.audit.isRunning()) return 'Checking…';
     return '';
@@ -73,7 +121,7 @@ export class LabelAuditPanelComponent {
   protected run() {
     const lf = this.labelFile();
     if (!lf || !this.canRun()) return;
-    void this.audit.run(lf, this.frames());
+    void this.audit.run(lf, this.scopeFrames());
   }
 
   protected frameName(f: AuditFinding): string {
@@ -82,6 +130,8 @@ export class LabelAuditPanelComponent {
 
   protected kindLabel(f: AuditFinding): string {
     if (f.kind === 'shape') return 'distance';
+    if (f.kind === 'midline') return 'midline';
+    if (f.kind === 'missing') return 'missing';
     return f.kind === 'swap' ? 'swap' : 'views';
   }
 

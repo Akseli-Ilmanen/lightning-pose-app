@@ -7,7 +7,12 @@ import {
   AuditFinding,
   AuditFocus,
   AuditMode,
+  auditModeOf,
+  AuditScope,
   GetLabelAuditResponse,
+  MidlineChoice,
+  MidlineGuides,
+  MissingWhere,
   ShapeGuides,
 } from './label-audit.model';
 
@@ -15,6 +20,68 @@ export const DEFAULT_AUDIT_TOLERANCE_PX = 5;
 const CHOICES_KEY = 'label-audit.keypoints';
 export const MAX_RIGID_GROUPS = 4;
 export const DEFAULT_SHAPE_STRICTNESS = 3;
+export const DEFAULT_MIDLINE_TOLERANCE_DEG = 5;
+
+/**
+ * The midline choice with its empty fields guessed from the keypoint names: a left and a
+ * right shoulder, and a keypoint called "back".
+ */
+export function midlineChoiceFor(choice: MidlineChoice, names: string[]): MidlineChoice {
+  const left = names.find((n) => /left.*shoulder|shoulder.*left/i.test(n)) ?? '';
+  const right = names.find((n) => /right.*shoulder|shoulder.*right/i.test(n)) ?? '';
+  const point = names.find((n) => /^back$/i.test(n)) ?? '';
+  return {
+    ...choice,
+    left: choice.left || (left && right ? left : ''),
+    right: choice.right || (left && right ? right : ''),
+    point: choice.point || point,
+  };
+}
+
+/** True when the three keypoints are chosen, differ and are in the label file. */
+export function midlineIsSet(choice: MidlineChoice, names: string[]): boolean {
+  const kps = [choice.left, choice.right, choice.point];
+  return new Set(kps).size === 3 && kps.every((k) => names.includes(k));
+}
+
+/**
+ * One finding per frame where `keypoint` has no label: in at least one view ("any"), in
+ * every view ("all"), or in some views but not all ("some"). Frame order.
+ */
+export function missingFindings(
+  frames: MVFrame[],
+  keypoint: string,
+  where: MissingWhere,
+): AuditFinding[] {
+  if (!keypoint) return [];
+  const out: AuditFinding[] = [];
+  for (const frame of frames) {
+    const missing = frame.views
+      .filter((v) => {
+        const k = v.keypoints.find((kp) => kp.keypointName === keypoint);
+        return !k || !Number.isFinite(k.x) || !Number.isFinite(k.y);
+      })
+      .map((v) => v.viewName);
+    const all = missing.length === frame.views.length;
+    if (!missing.length || (where === 'all' && !all) || (where === 'some' && all)) continue;
+    out.push({
+      kind: 'missing',
+      view: missing[0],
+      keypoint,
+      partner: null,
+      imgPaths: Object.fromEntries(frame.views.map((v) => [v.viewName, v.imgPath])),
+      errorPx: missing.length,
+      tolerancePx: frame.views.length,
+      score: missing.length / frame.views.length,
+      reason:
+        all && frame.views.length > 1
+          ? `${keypoint} is missing in every view`
+          : `${keypoint} is missing in ${missing.join(', ')}`,
+      frameKey: frame.key,
+    });
+  }
+  return out;
+}
 
 /** Which keypoints the audit reports, and which rigid group (1..) each belongs to. */
 export interface AuditKeypointChoices {
@@ -51,6 +118,12 @@ export class LabelAuditService {
   readonly tolerancePx = signal(DEFAULT_AUDIT_TOLERANCE_PX);
   /** Keypoints to report and their rigid groups. Remembered per project. */
   readonly choices = signal<AuditKeypointChoices>(this.storedChoices());
+  /** What the next check runs on: the saved labels, or the frames still to label. */
+  readonly scope = signal<AuditScope>('labeled');
+  /** What the findings shown were checked on. */
+  readonly auditedScope = signal<AuditScope>('labeled');
+  /** Queue check: keys of the queue frames without any finding (they can be approved as they are). */
+  readonly cleanFrameKeys = signal<string[]>([]);
   readonly isRunning = signal(false);
   readonly error = signal<string | null>(null);
   /** Label file key the findings belong to; null before the first run. */
@@ -72,12 +145,32 @@ export class LabelAuditService {
       .map((a) => a.trim())
       .filter((a) => a.length > 0),
   );
-  readonly viewsCount = computed(() => this.allFindings().filter((f) => f.kind !== 'shape').length);
-  readonly shapeCount = computed(() => this.allFindings().filter((f) => f.kind === 'shape').length);
-  /** Findings of the shown audit; the review steps through these. */
-  readonly findings = computed(() =>
-    this.allFindings().filter((f) => (f.kind === 'shape') === (this.mode() === 'shape')),
+  /** Midline check: the three keypoints and the allowed angle. Remembered per project. */
+  readonly midline = signal<MidlineChoice>(this.storedMidline());
+  private countOf(mode: AuditMode): number {
+    return this.allFindings().filter((f) => auditModeOf(f.kind) === mode).length;
+  }
+  /** Missing: the keypoint whose missing labels are listed, and in which views. Remembered per project. */
+  readonly missingKeypoint = signal(this.stored('missing-keypoint'));
+  readonly missingWhere = signal<MissingWhere>(
+    (['any', 'all', 'some'] as const).find((w) => w === this.stored('missing-where')) ?? 'any',
   );
+  readonly missingCount = computed(() => this.countOf('missing'));
+  /** The findings of the server and the frames of the last check, to list another keypoint's gaps. */
+  private serverFindings: AuditFinding[] = [];
+  private checkedFrames: MVFrame[] = [];
+  readonly viewsCount = computed(() => this.countOf('views'));
+  readonly shapeCount = computed(() => this.countOf('shape'));
+  readonly midlineCount = computed(() => this.countOf('midline'));
+  /**
+   * Findings of the shown audit; the review steps through these. Midline findings are one
+   * per frame, so they come worst first; the others stay in frame order.
+   */
+  readonly findings = computed(() => {
+    const mode = this.mode();
+    const own = this.allFindings().filter((f) => auditModeOf(f.kind) === mode);
+    return mode === 'midline' ? own.sort((a, b) => b.score - a.score) : own;
+  });
   readonly summary = signal<Omit<GetLabelAuditResponse, 'items'> | null>(null);
   /** Findings whose frame is not in the loaded label file (should not happen). */
   readonly unmatched = signal(0);
@@ -103,7 +196,10 @@ export class LabelAuditService {
     const f = this.focus()?.finding;
     if (!f || !this.onlyFlaggedKeypoints()) return null;
     // A rigid group is judged as a whole: any of its labels may be the wrong one.
-    if (f.kind === 'shape' && f.group?.length) return f.group;
+    // The midline keypoint is judged against the left and right keypoints, which may be the wrong ones.
+    if ((f.kind === 'shape' || f.kind === 'midline') && f.group?.length) return f.group;
+    // A missing keypoint is placed by looking at the others.
+    if (f.kind === 'missing') return null;
     return f.partner ? [f.keypoint, f.partner] : [f.keypoint];
   });
 
@@ -114,9 +210,11 @@ export class LabelAuditService {
     this.error.set(null);
     this.stopReview();
     this.lastRun = { labelFile, names: keypointNamesOf(frames) };
+    const scope = this.scope();
     const names = keypointNamesOf(frames);
     const { unchecked, groups } = this.choices();
     const checked = names.filter((n) => !unchecked.includes(n));
+    const midline = midlineChoiceFor(this.midline(), names);
     try {
       const response = (await this.rpc.call('getLabelAudit', {
         projectKey,
@@ -129,15 +227,35 @@ export class LabelAuditService {
         keypoints: checked.length === names.length ? null : checked,
         shapeStrictness: this.shapeStrictness(),
         animals: this.animalNames(),
+        midline: midlineIsSet(midline, names) ? midline : null,
+        scope: scope === 'queue' ? 'unlabeled' : 'labeled',
       })) as GetLabelAuditResponse;
       const { items, ...summary } = response;
       const findings = matchFindingsToFrames(items, frames);
-      this.allFindings.set(findings);
+      this.serverFindings = findings;
+      this.checkedFrames = frames;
+      this.allFindings.set([
+        ...findings,
+        ...missingFindings(frames, this.missingKeypoint(), this.missingWhere()),
+      ]);
       this.unmatched.set(items.length - findings.length);
       this.summary.set(summary);
+      this.auditedScope.set(scope);
+      const frameOfImg = new Map<string, string>();
+      for (const frame of frames) {
+        for (const view of frame.views) frameOfImg.set(view.imgPath, frame.key);
+      }
+      this.cleanFrameKeys.set(
+        (response.cleanFrames ?? [])
+          .map((paths) => frameOfImg.get(Object.values(paths)[0]))
+          .filter((key): key is string => !!key),
+      );
       this.auditedLabelFileKey.set(labelFile.key);
     } catch (e) {
+      this.serverFindings = [];
+      this.checkedFrames = [];
       this.allFindings.set([]);
+      this.cleanFrameKeys.set([]);
       this.summary.set(null);
       this.error.set(errorText(e));
     } finally {
@@ -173,11 +291,129 @@ export class LabelAuditService {
       rigidGroups: rigidGroupsOf(this.choices().groups, last.names),
       shapeStrictness: this.shapeStrictness(),
       animals: this.animalNames(),
+      scope: this.auditedScope() === 'queue' ? 'unlabeled' : 'labeled',
       imgPaths,
       labels,
       keypoint,
     })) as ShapeGuides;
     return guides.group.length ? guides : null;
+  }
+
+  /**
+   * The midline of the frame with its labels as they are on screen, unsaved edits included.
+   * `group` is a midline finding's [point, left, right]. Null when the left and right
+   * keypoints cannot be triangulated.
+   */
+  async midlineGuides(
+    frame: MVFrame,
+    sessionKey: string,
+    group: string[],
+  ): Promise<MidlineGuides | null> {
+    const projectKey = this.projectInfoService.projectContext()?.key;
+    const [point, left, right] = group;
+    if (!projectKey || !point || !left || !right) return null;
+    const labels: Record<string, Record<string, [number, number] | null>> = {};
+    for (const view of frame.views) {
+      labels[view.viewName] = {};
+      for (const k of view.keypoints) {
+        if (!group.includes(k.keypointName)) continue;
+        labels[view.viewName][k.keypointName] =
+          Number.isFinite(k.x) && Number.isFinite(k.y) ? [k.x, k.y] : null;
+      }
+    }
+    const guides = (await this.rpc.call('getMidlineGuides', {
+      projectKey,
+      sessionKey,
+      left,
+      right,
+      point,
+      labels,
+    })) as MidlineGuides;
+    return guides.views.length ? guides : null;
+  }
+
+  setMidline(patch: Partial<MidlineChoice>) {
+    const choice = { ...this.midline(), ...patch };
+    this.midline.set(choice);
+    try {
+      localStorage.setItem(this.midlineStorageKey(), JSON.stringify(choice));
+    } catch {
+      // Storage is a convenience only.
+    }
+  }
+
+  private midlineStorageKey(): string {
+    return `label-audit.midline.${this.projectInfoService.projectContext()?.key ?? ''}`;
+  }
+
+  private storedMidline(): MidlineChoice {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.midlineStorageKey()) ?? 'null');
+      if (raw && typeof raw === 'object') {
+        const tolerance = Number(raw.toleranceDeg);
+        return {
+          left: String(raw.left ?? ''),
+          right: String(raw.right ?? ''),
+          point: String(raw.point ?? ''),
+          toleranceDeg: tolerance > 0 ? tolerance : DEFAULT_MIDLINE_TOLERANCE_DEG,
+        };
+      }
+    } catch {
+      // fall through to the default
+    }
+    return { left: '', right: '', point: '', toleranceDeg: DEFAULT_MIDLINE_TOLERANCE_DEG };
+  }
+
+  /**
+   * Missing: another keypoint, or another rule for the views. The list follows at once, from
+   * the frames as they were at the last check.
+   */
+  setMissing(patch: { keypoint?: string; where?: MissingWhere }) {
+    if (patch.keypoint !== undefined) this.missingKeypoint.set(patch.keypoint);
+    if (patch.where !== undefined) this.missingWhere.set(patch.where);
+    this.store('missing-keypoint', this.missingKeypoint());
+    this.store('missing-where', this.missingWhere());
+    if (this.auditedLabelFileKey() === null) return;
+    this.stopReview();
+    this.allFindings.set([
+      ...this.serverFindings,
+      ...missingFindings(this.checkedFrames, this.missingKeypoint(), this.missingWhere()),
+    ]);
+  }
+
+  private stored(name: string): string {
+    try {
+      return (
+        localStorage.getItem(
+          `label-audit.${name}.${this.projectInfoService.projectContext()?.key ?? ''}`,
+        ) ?? ''
+      );
+    } catch {
+      return '';
+    }
+  }
+
+  private store(name: string, value: string) {
+    try {
+      localStorage.setItem(
+        `label-audit.${name}.${this.projectInfoService.projectContext()?.key ?? ''}`,
+        value,
+      );
+    } catch {
+      // Storage is a convenience only.
+    }
+  }
+
+  /** Another scope: the findings of the last check no longer apply. */
+  setScope(scope: AuditScope) {
+    if (scope === this.scope()) return;
+    this.clear();
+    this.scope.set(scope);
+  }
+
+  /** Frames that were approved are no longer waiting. */
+  dropClean(keys: string[]) {
+    this.cleanFrameKeys.update((all) => all.filter((k) => !keys.includes(k)));
   }
 
   setMode(mode: AuditMode) {
@@ -255,10 +491,13 @@ export class LabelAuditService {
   /** Forget the findings, for example when another label file opens. */
   clear() {
     this.stopReview();
+    this.serverFindings = [];
+    this.checkedFrames = [];
     this.allFindings.set([]);
     this.summary.set(null);
     this.error.set(null);
     this.unmatched.set(0);
+    this.cleanFrameKeys.set([]);
     this.auditedLabelFileKey.set(null);
   }
 

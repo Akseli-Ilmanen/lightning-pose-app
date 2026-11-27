@@ -27,10 +27,12 @@
             [class.alert-warning]="finding.kind === 'swap'"
             [class.alert-info]="finding.kind === 'multiview'"
             [class.alert-accent]="finding.kind === 'shape'"
+            [class.alert-secondary]="finding.kind === 'midline'"
             [style.max-width.px]="viewOptions.imageSizePx()"
           >
             <span class="font-semibold">
-              Likely mistake {{ focus.index + 1 }} / {{ focus.total }}
+              {{ finding.kind === 'missing' ? 'Missing label' : 'Likely mistake' }}
+              {{ focus.index + 1 }} / {{ focus.total }}
             </span>
             @if (shapeStatus(); as r) {
               <span class="grow min-w-0 flex flex-wrap gap-x-3" data-testid="audit-shape-reason">
@@ -52,6 +54,42 @@
                 }
                 @if (shapeRefitting()) {
                   <span class="opacity-70" data-testid="shape-refit-state">measuring…</span>
+                }
+              </span>
+            } @else if (midlineStatus(); as m) {
+              <span class="grow min-w-0 flex flex-wrap gap-x-3" data-testid="audit-midline-status">
+                @if (m.yaw === null) {
+                  <span class="font-semibold"
+                    >no midline: {{ m.point }}, {{ m.left }} and {{ m.right }} need labels in 2
+                    views</span
+                  >
+                } @else {
+                  <span
+                    class="font-semibold"
+                    [class.text-success]="m.ok === true"
+                    [class.text-warning]="m.ok === false"
+                    >{{ m.point }} {{ abs(m.yaw) | number: '1.0-1' }}° off the midline{{
+                      m.ok ? ' ✓' : ', towards ' + m.towards
+                    }}</span
+                  >
+                  <span class="opacity-70">allowed {{ m.limit }}°</span>
+                  @if (m.off !== null) {
+                    <span class="opacity-70">{{ sig(abs(m.off)) }} from the midplane</span>
+                  }
+                }
+                @if (m.widthPercent !== null) {
+                  <span
+                    [class.opacity-70]="abs(m.widthPercent - 100) <= 15"
+                    [class.text-warning]="abs(m.widthPercent - 100) > 15"
+                    >{{ m.left }} to {{ m.right }}: {{ m.widthPercent | number: '1.0-0' }}% of
+                    usual</span
+                  >
+                }
+                @for (d of lineDistances(); track d.view) {
+                  <span data-testid="line-distance" class="opacity-70"
+                    >{{ selectedKeypoint() }} {{ d.px | number: '1.0-1' }} px from the {{ d.view }}
+                    line</span
+                  >
                 }
               </span>
             } @else {
@@ -166,13 +204,14 @@
             [visibleKeypoints]="shownKeypoints()"
             [epipolarGuides]="epipolarGuides()"
             [shapeLines]="shapeLines()"
+            [midlineGuide]="midlineGuide()"
             [guideViews]="guideViews()"
             (keypointUpdated)="
               handleKeypointUpdated($event.kp, $event.position, fv)
             "
           ></app-image-label-widget>
         </div>
-        @if (shapePairs().length || guideLegend().length) {
+        @if (shapePairs().length || guideLegend().length || midlineGuide()) {
           <div
             class="px-2 py-0.5 text-xs flex flex-wrap items-center gap-x-3 opacity-70"
             data-testid="guide-legend"
@@ -186,6 +225,16 @@
                 too short
                 <span class="inline-block w-4 border-t border-dotted ml-2"></span>
                 as usual
+              </span>
+            }
+            @if (midlineGuide(); as mg) {
+              <span class="flex items-center gap-1" data-testid="midline-legend">
+                <span class="inline-block w-4 border-t-2 border-dashed" style="border-color: #facc15"></span>
+                midline
+                @if (mg.suggestion) {
+                  <span class="ml-2" style="color: #22d3ee">✕</span> on the midline for the other view's
+                  label
+                }
               </span>
             }
             @for (item of guideLegend(); track item.view) {
@@ -292,6 +341,32 @@
             />
             <span class="text-xs">Keep selected</span>
           </label>
+          @if (hasCameraCalibrationFiles() && isMultiview() && !auditFocus()) {
+            <span class="flex items-center gap-1" data-testid="epipolar-while-labeling">
+              <label
+                class="flex items-center gap-2 cursor-pointer tooltip tooltip-bottom before:max-w-56"
+                data-tip="For the selected keypoint: where its labels in the other views allow it to be in this view."
+              >
+                <input
+                  type="checkbox"
+                  aria-label="Show epipolar lines while labeling"
+                  [(ngModel)]="viewOptions.showEpipolarLinesWhileLabeling"
+                  class="toggle toggle-xs toggle-primary"
+                />
+                <span class="text-xs">Epipolar lines</span>
+              </label>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                class="input input-xs w-12"
+                aria-label="Number of epipolar lines while labeling"
+                [disabled]="!viewOptions.showEpipolarLinesWhileLabeling()"
+                [value]="viewOptions.maxEpipolarLines()"
+                (change)="viewOptions.setMaxEpipolarLines(+$any($event.target).value)"
+              />
+            </span>
+          }
           <button
             type="button"
             class="btn btn-error btn-soft btn-xs"

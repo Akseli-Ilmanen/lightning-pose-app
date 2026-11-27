@@ -123,6 +123,10 @@ export class LabelerViewOptionsService {
   showEpipolarLines = signal(
     storedFlag('labeler-view-options.showEpipolarLines', true),
   );
+  /** The same lines outside the label audit review, while labeling any frame. */
+  showEpipolarLinesWhileLabeling = signal(
+    storedFlag('labeler-view-options.showEpipolarLinesWhileLabeling', false),
+  );
   /** How many epipolar lines to draw: the ones that cross most steeply come first. */
   maxEpipolarLines = signal(
     clampMaxEpipolarLines(
@@ -138,6 +142,12 @@ export class LabelerViewOptionsService {
       localStorage.setItem(
         'labeler-view-options.showEpipolarLines',
         String(this.showEpipolarLines()),
+      ),
+    );
+    effect(() =>
+      localStorage.setItem(
+        'labeler-view-options.showEpipolarLinesWhileLabeling',
+        String(this.showEpipolarLinesWhileLabeling()),
       ),
     );
     effect(() =>

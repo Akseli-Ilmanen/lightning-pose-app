@@ -83,6 +83,11 @@ export class ImageLabelWidgetComponent {
       main: boolean;
     }[]
   >([]);
+  /**
+   * Label audit, midline check: the midline in this view as SVG polyline points (image pixels),
+   * and where the other views put the midline keypoint on it.
+   */
+  midlineGuide = input<{ points: string; suggestion: GuidePoint | null } | null>(null);
   /** View names of the frame, so each source view keeps its line color. */
   guideViews = input<string[]>([]);
 

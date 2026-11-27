@@ -14,6 +14,19 @@ camera calibration. No model is needed:
   learned from the labels (``label_audit_shape``); the keypoint in the most off pairs
   is reported, with the distances of the whole group in that frame.
 
+- **midline**: a keypoint on the body midline (a back) is off the plane of the points at
+  equal distance from a left and a right keypoint (the shoulders), by more than a number
+  of degrees seen from their midpoint. The body axis midpoint -> back is then rotated
+  sideways by that angle. The three keypoints are named by the user.
+
+The audit runs on the saved labels, or (``scope: "unlabeled"``) on the frames still in the
+unlabeled queue, with the model predictions they were queued with as their labels. The usual
+distances are then learned from the saved labels and the queue together; only queue frames
+are reported, and ``cleanFrames`` lists the queue frames without any finding.
+
+``getMidlineGuides`` measures one frame's midline with the labels as they are on screen and
+returns, per view, the midline and where the other views' ray meets the midplane.
+
 ``getShapeGuides`` measures one frame's rigid group with the labels as they are on screen
 (unsaved edits included), so the distances follow the user's corrections.
 
@@ -23,10 +36,12 @@ other views' labels and the point they agree on.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -61,6 +76,10 @@ SWAP_GAIN = 0.5
 # Rigid groups: a pair of keypoints is off when its 3D distance is this many spreads
 # from its usual distance.
 SHAPE_SPREAD_FACTOR = 3.0
+# Midline: the keypoint is off when the body axis is rotated by more than this many degrees.
+DEFAULT_MIDLINE_TOLERANCE_DEG = 5.0
+# Midline: the left-right distance is "unusual" this far from its median (the two may be the wrong ones).
+MIDLINE_WIDTH_TOLERANCE = 0.15
 
 # ---------------------------------------------------------------- models
 class AuditLabelFileView(BaseModel):
@@ -68,6 +87,29 @@ class AuditLabelFileView(BaseModel):
 
     viewName: str
     csvPath: Path
+
+
+class MidlineSetting(BaseModel):
+    """A keypoint that lies on the midline between a left and a right keypoint."""
+
+    left: str
+    right: str
+    point: str
+    toleranceDeg: float = DEFAULT_MIDLINE_TOLERANCE_DEG
+
+
+class MidlineInfo(BaseModel):
+    """One frame's midline keypoint against the midplane of left and right (3D)."""
+
+    # Angle between the axis midpoint -> point and the midplane; positive = towards `right`.
+    yawDeg: float | None = None
+    # Distance of the point from the midplane, and distance to left minus distance to right
+    # (calibration units).
+    off: float | None = None
+    asymmetry: float | None = None
+    # Distance left-right, and its median over the animal's (or all) frames.
+    width: float | None = None
+    widthUsual: float | None = None
 
 
 class GetLabelAuditRequest(BaseModel):
@@ -87,6 +129,11 @@ class GetLabelAuditRequest(BaseModel):
     # Rigid groups: names of the animals, as they occur in the session names. Each animal
     # gets its own distances. Empty: one set of distances, every session at its own size.
     animals: list[str] = []
+    # Midline check; None: not run.
+    midline: MidlineSetting | None = None
+    # "labeled": the saved labels. "unlabeled": the frames in the unlabeled queue, with the
+    # predictions they were queued with.
+    scope: Literal["labeled", "unlabeled"] = "labeled"
 
 
 class ShapePair(BaseModel):
@@ -114,8 +161,8 @@ class ShapeTemplate(BaseModel):
 class LabelAuditItem(BaseModel):
     """One label that is probably wrong."""
 
-    kind: str  # "multiview" | "swap" | "shape"
-    view: str  # the view whose label is probably wrong (shape: not known, the first view)
+    kind: str  # "multiview" | "swap" | "shape" | "midline"
+    view: str  # the view whose label is probably wrong (shape, midline: not known, the first view)
     keypoint: str
     partner: str | None = None  # the other keypoint of a swap, or of a single off pair
     # Image path of this frame in every view (CSV index), so the client can find the frame.
@@ -132,6 +179,8 @@ class LabelAuditItem(BaseModel):
     # shape: how many of the keypoint's measurable pairs are off.
     offPairs: int = 0
     checkedPairs: int = 0
+    # midline: errorPx and tolerancePx are degrees; group = [point, left, right].
+    midline: MidlineInfo | None = None
 
 
 class GetShapeGuidesRequest(GetLabelAuditRequest):
@@ -172,6 +221,43 @@ class GetLabelAuditResponse(BaseModel):
     shapeUnmatchedSessions: list[str] = []
     # One arrangement per rigid group and animal.
     shapeTemplates: list[ShapeTemplate] = []
+    # Midline: frames measured, frames where the point is labeled but left or right cannot
+    # be triangulated (no midplane), and why the check could not run.
+    midlineChecked: int = 0
+    midlineNoGuide: int = 0
+    midlineProblems: list[str] = []
+    # scope "unlabeled": the queue frames (image path per view) that could be checked and have
+    # no finding of any keypoint.
+    cleanFrames: list[dict[str, str]] = []
+
+
+class GetMidlineGuidesRequest(BaseModel):
+    """One frame as it is on screen, to draw its midline."""
+
+    projectKey: str
+    sessionKey: str
+    left: str
+    right: str
+    point: str
+    # The frame's labels now, per view and keypoint: [x, y], or null where not placed.
+    labels: dict[str, dict[str, list[float] | None]]
+
+
+class MidlineViewGuide(BaseModel):
+    view: str
+    # The midline in this view: from the midpoint of left and right through the point,
+    # laid into the midplane.
+    line: list[GuidePoint] = []
+    # Where the point would be in this view if it were on the midplane: the other view's
+    # ray cut with the plane (two or more other views: their 3D point moved into the plane).
+    suggestion: GuidePoint | None = None
+
+
+class GetMidlineGuidesResponse(BaseModel):
+    """Empty when left and right cannot be triangulated."""
+
+    views: list[MidlineViewGuide] = []
+    info: MidlineInfo | None = None
 
 
 class GuideLabel(BaseModel):
@@ -257,6 +343,29 @@ def left_right_pairs(keypoints: list[str]) -> list[tuple[str, str]]:
 def _read_labels(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path, header=[0, 1, 2], index_col=0)
     return fix_empty_first_row(df)
+
+
+def _read_queue(csv_path: Path, like: pd.DataFrame) -> pd.DataFrame:
+    """The unlabeled queue next to a label CSV as label rows: its predictions, NaN elsewhere."""
+    sidecar = csv_path.with_suffix(".unlabeled.jsonl")
+    rows: dict[str, dict] = {}
+    if sidecar.exists():
+        scorer = like.columns[0][0]
+        for line in sidecar.read_text().splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            row = rows.setdefault(str(entry.get("frame_path", "")).replace("\\", "/"), {})
+            for kp in (entry.get("predictions") or {}).get("predictions") or []:
+                for axis in ("x", "y"):
+                    col = (scorer, kp.get("keypoint_name"), axis)
+                    if col in like.columns and kp.get(axis) is not None:
+                        row[col] = float(kp[axis])
+    out = pd.DataFrame(np.nan, index=list(rows), columns=like.columns)
+    for img, row in rows.items():
+        for col, value in row.items():
+            out.loc[img, col] = value
+    return out
 
 
 def _frame_id(img_path: str, view_names: list[str]) -> tuple[str, str] | None:
@@ -365,6 +474,8 @@ def run_label_audit(
     want: dict | None = None,
     learned: list | None = None,
     animals: list[str] | None = None,
+    midline: MidlineSetting | None = None,
+    scope: str = "labeled",
 ) -> GetLabelAuditResponse:
     """Run the audit. ``overrides`` (view -> image path -> keypoint -> [x, y] or None) replaces
     labels in memory only. ``want`` ({"keypoint", "img": set of image paths}) gets "result":
@@ -375,6 +486,7 @@ def run_label_audit(
     project_views = list(project.config.view_names or view_names) if project.config else view_names
 
     labels: dict[str, pd.DataFrame] = {}
+    queued: set[str] = set()  # image paths of the queue frames (scope "unlabeled")
     for v in views:
         p = v.csvPath if v.csvPath.is_absolute() else data_dir / v.csvPath
         if not p.resolve().is_relative_to(data_dir):
@@ -383,6 +495,11 @@ def run_label_audit(
                 detail=f"{v.csvPath} is not inside the project's data directory.",
             )
         labels[v.viewName] = _read_labels(p)
+        if scope == "unlabeled":
+            queue = _read_queue(p, labels[v.viewName])
+            queue = queue[~queue.index.isin(labels[v.viewName].index)]
+            queued.update(queue.index)
+            labels[v.viewName] = pd.concat([labels[v.viewName], queue]) if len(queue) else labels[v.viewName]
 
     for v, rows in (overrides or {}).items():
         df = labels.get(v)
@@ -405,6 +522,12 @@ def run_label_audit(
             if fid is not None:
                 frames[fid][v] = str(idx)
 
+    # Frames to report; None: all.
+    in_scope: set[tuple[str, str]] | None = None
+    if scope == "unlabeled":
+        in_scope = {fid for fid, paths in frames.items() if any(p in queued for p in paths.values())}
+    checkable: set[tuple[str, str]] = set()  # frames of a session with a calibration
+
     keypoints = list(dict.fromkeys(labels[view_names[0]].columns.get_level_values(1)))
     pairs = left_right_pairs(keypoints)
     items: list[LabelAuditItem] = []
@@ -413,6 +536,10 @@ def run_label_audit(
     # For the shape check: per session, its rig, frames, labels and consistent 3D points.
     shape_data: list[tuple[_Rig, list[str], list[tuple[str, str]], np.ndarray, np.ndarray]] = []
     flagged: set[tuple[tuple[str, str], str]] = set()  # (frame, keypoint) with a finding
+    # For the midline check: per session, its views, frames and the 3D points of left, right, point.
+    midline_data: list[tuple[str, list[str], list[tuple[str, str]], np.ndarray]] = []
+    midline_names = [midline.left, midline.right, midline.point] if midline else []
+    midline_ok = len(set(midline_names)) == 3 and all(kp in keypoints for kp in midline_names)
 
     by_session: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for fid in frames:
@@ -449,8 +576,16 @@ def run_label_audit(
                 arr[c, have, k] = xy
         F, K = len(fids), len(keypoints)
         pts = arr.reshape(len(vs), F * K, 2)
-        n_labeled = (~np.isnan(pts).any(axis=2)).sum(0)
-        points_checked += int((n_labeled >= 2).sum())
+        checkable.update(fids)
+        n_labeled = (~np.isnan(pts).any(axis=2)).sum(0).reshape(F, K)
+        counted = [in_scope is None or f in in_scope for f in fids]
+        points_checked += int((n_labeled[counted] >= 2).sum())
+
+        if midline_ok:
+            cols = [keypoints.index(kp) for kp in midline_names]
+            m = arr[:, :, cols].reshape(len(vs), F * 3, 2)
+            p3m = rig.triangulate(rig.undistort(m), ~np.isnan(m).any(axis=2)).reshape(F, 3, 3)
+            midline_data.append((session, vs, fids, p3m))
 
         loo, resid = _loo_errors(rig, pts, with_residual=True)
         loo, resid = loo.reshape(len(vs), F, K), resid.reshape(len(vs), F, K)
@@ -562,6 +697,24 @@ def run_label_audit(
             animals, shape_animals, shape_templates,
         )
 
+    midline_problems: list[str] = []
+    midline_checked = midline_no_guide = 0
+    if midline and not midline_ok:
+        unknown = [kp for kp in midline_names if kp not in keypoints]
+        midline_problems.append(
+            f"Not in the label file: {', '.join(unknown)}" if unknown else "Left, right and midline keypoint must differ."
+        )
+    elif midline:
+        midline_checked, midline_no_guide = _midline_findings(
+            midline, midline_data, frames, animals, items, in_scope
+        )
+
+    clean: list[dict[str, str]] = []
+    if in_scope is not None:
+        items = [it for it in items if _frame_id(next(iter(it.imgPaths.values())), project_views) in in_scope]
+        found = {_frame_id(next(iter(it.imgPaths.values())), project_views) for it in items}
+        clean = [frames[fid] for fid in sorted(in_scope & checkable - found)]
+
     if only_keypoints is not None:
         only = set(only_keypoints)
         items = [it for it in items if it.keypoint in only or it.partner in only]
@@ -576,7 +729,7 @@ def run_label_audit(
     items.sort(key=key)
     return GetLabelAuditResponse(
         items=items,
-        framesChecked=len(frames),
+        framesChecked=len(frames) if in_scope is None else len(in_scope),
         pointsChecked=points_checked,
         sessionsWithoutCalibration=no_calib,
         shapeGroups=shape_groups,
@@ -586,7 +739,151 @@ def run_label_audit(
         shapeAnimalSessions=shape_animals["sessions"],
         shapeUnmatchedSessions=shape_animals["unmatched"],
         shapeTemplates=shape_templates,
+        midlineChecked=midline_checked,
+        midlineNoGuide=midline_no_guide,
+        midlineProblems=midline_problems,
+        cleanFrames=clean,
     )
+
+
+def midline_metrics(p3: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """p3: (N, 3, 3) 3D points of left, right, point. Returns yaw (deg), off, asymmetry, width; NaN
+    where a point is missing. The midplane holds the points at equal distance from left and right."""
+    left, right, point = p3[:, 0], p3[:, 1], p3[:, 2]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        width = np.linalg.norm(right - left, axis=1)
+        mid = (left + right) / 2
+        off = np.einsum("ij,ij->i", point - mid, (right - left) / width[:, None])
+        yaw = np.degrees(np.arcsin(np.clip(off / np.linalg.norm(point - mid, axis=1), -1, 1)))
+        asym = np.linalg.norm(point - left, axis=1) - np.linalg.norm(point - right, axis=1)
+    return yaw, off, asym, width
+
+
+def _num(x: float) -> float | None:
+    return float(x) if np.isfinite(x) else None
+
+
+def _midline_findings(setting: MidlineSetting, data, frames, animals, items, in_scope=None) -> tuple[int, int]:
+    """Add the frames whose midline keypoint is off the midplane. Returns (frames measured,
+    frames with the point but no midplane)."""
+    measured = [midline_metrics(p3m) for _, _, _, p3m in data]
+    # Usual left-right distance: per animal when animals are named, else over all sessions.
+    widths: dict[str | None, list[np.ndarray]] = defaultdict(list)
+    owner = [_animal_of(session, animals) if animals else None for session, _, _, _ in data]
+    for who, (_, _, _, width) in zip(owner, measured):
+        widths[who].append(width[np.isfinite(width)])
+    usual = {who: float(np.median(np.concatenate(w))) for who, w in widths.items() if sum(map(len, w))}
+    checked = no_guide = 0
+    for (session, vs, fids, p3m), who, (yaw, off, asym, width) in zip(data, owner, measured):
+        for f, fid in enumerate(fids):
+            if in_scope is not None and fid not in in_scope:
+                continue  # its width still counts towards the usual width
+            if not np.isfinite(yaw[f]):
+                no_guide += int(np.isfinite(p3m[f, 2]).all())
+                continue
+            checked += 1
+            if not abs(yaw[f]) > setting.toleranceDeg:
+                continue
+            side = setting.right if yaw[f] > 0 else setting.left
+            reason = (
+                f"{setting.point} is {abs(yaw[f]):.0f}° off the midline of {setting.left} and {setting.right}, "
+                f"towards {side}"
+            )
+            width_usual = usual.get(who)
+            if width_usual and abs(width[f] / width_usual - 1) > MIDLINE_WIDTH_TOLERANCE:
+                reason += (
+                    f"; {setting.left} to {setting.right} is {100 * width[f] / width_usual:.0f}% of usual, "
+                    "one of them may be the wrong label"
+                )
+            items.append(
+                LabelAuditItem(
+                    kind="midline",
+                    view=vs[0],
+                    keypoint=setting.point,
+                    imgPaths=frames[fid],
+                    errorPx=float(abs(yaw[f])),
+                    tolerancePx=setting.toleranceDeg,
+                    score=float(abs(yaw[f]) / setting.toleranceDeg),
+                    reason=reason,
+                    group=[setting.point, setting.left, setting.right],
+                    midline=MidlineInfo(
+                        yawDeg=float(yaw[f]), off=float(off[f]), asymmetry=float(asym[f]),
+                        width=float(width[f]), widthUsual=width_usual,
+                    ),
+                )
+            )
+    return checked, no_guide
+
+
+def midline_guides(project: Project, req: GetMidlineGuidesRequest) -> GetMidlineGuidesResponse:
+    calib = find_calibration_file(req.sessionKey, project)
+    if calib is None:
+        return GetMidlineGuidesResponse()
+    cg_all = CameraGroup.load(str(calib))
+    cam_names = [c.get_name() for c in cg_all.cameras]
+    vs = [v for v in req.labels if v in cam_names]
+    if len(vs) < 2:
+        return GetMidlineGuidesResponse()
+    rig = _Rig(cg_all.subset_cameras_names(vs))
+    cams = rig.cg.cameras
+    names = [req.left, req.right, req.point]
+    arr = np.full((len(vs), 3, 2), np.nan)
+    for c, v in enumerate(vs):
+        for k, kp in enumerate(names):
+            xy = req.labels[v].get(kp)
+            if xy is not None and len(xy) == 2:
+                arr[c, k] = xy
+    labeled = ~np.isnan(arr).any(axis=2)
+    und = rig.undistort(arr)
+    p3 = rig.triangulate(und, labeled)
+    left, right, point = p3
+    if not np.isfinite([left, right]).all():
+        return GetMidlineGuidesResponse()
+    yaw, off, asym, width = (m[0] for m in midline_metrics(p3[None]))
+    n = (right - left) / np.linalg.norm(right - left)
+    mid = (left + right) / 2
+
+    def into_plane(p: np.ndarray) -> np.ndarray:
+        return p - ((p - mid) @ n) * n
+
+    out = []
+    for c, v in enumerate(vs):
+        line: list[GuidePoint] = []
+        if np.isfinite(point).all():
+            on_plane = into_plane(point)
+            xy = np.asarray(cams[c].project(mid + np.linspace(0, 1.6, 30)[:, None] * (on_plane - mid))).reshape(-1, 2)
+            line = [GuidePoint(x=float(a), y=float(b)) for a, b in xy if np.isfinite([a, b]).all()]
+        others = [o for o in range(len(vs)) if o != c and labeled[o, 2]]
+        target = None
+        if len(others) == 1:
+            center, d = _camera_center_and_ray(cams[others[0]], *arr[others[0], 2])
+            if abs(d @ n) > 0.05:  # else the ray runs along the plane
+                s = (mid - center) @ n / (d @ n)
+                target = center + s * d if s > 0 else None
+        elif len(others) >= 2:
+            use = np.zeros((len(vs), 1), dtype=bool)
+            use[others] = True
+            target = into_plane(rig.triangulate(und[:, 2:3], use)[0])
+        suggestion = None
+        if target is not None and np.isfinite(target).all():
+            sx, sy = np.asarray(cams[c].project(target[None])).reshape(2)
+            if np.isfinite([sx, sy]).all():
+                suggestion = GuidePoint(x=float(sx), y=float(sy))
+        out.append(MidlineViewGuide(view=v, line=line, suggestion=suggestion))
+    return GetMidlineGuidesResponse(
+        views=out,
+        info=MidlineInfo(yawDeg=_num(yaw), off=_num(off), asymmetry=_num(asym), width=_num(width)),
+    )
+
+
+@router.post("/app/v0/rpc/getMidlineGuides")
+def get_midline_guides(
+    request: GetMidlineGuidesRequest,
+    project_info_getter: ProjectInfoGetter = Depends(deps.project_info_getter),
+) -> GetMidlineGuidesResponse:
+    """The midline of one frame with its labels as they are on screen (nothing is saved)."""
+    project: Project = project_info_getter(request.projectKey)
+    return midline_guides(project, request)
 
 
 def _animal_of(session: str, animals: list[str]) -> str | None:
@@ -776,6 +1073,8 @@ async def get_label_audit(
         request.keypoints,
         request.shapeStrictness,
         animals=request.animals,
+        midline=request.midline,
+        scope=request.scope,
     )
 
 
@@ -790,7 +1089,11 @@ def _learned_shapes(project: Project, request: GetShapeGuidesRequest) -> list[di
     for v in request.views:
         p = v.csvPath if v.csvPath.is_absolute() else data_dir / v.csvPath
         files.append((str(p), p.stat().st_mtime_ns if p.exists() else 0))
+        if request.scope == "unlabeled":
+            q = p.with_suffix(".unlabeled.jsonl")
+            files.append((str(q), q.stat().st_mtime_ns if q.exists() else 0))
     key = (
+        request.scope,
         request.projectKey,
         tuple(files),
         request.defaultTolerancePx,
@@ -804,6 +1107,7 @@ def _learned_shapes(project: Project, request: GetShapeGuidesRequest) -> list[di
         run_label_audit(
             project, request.views, request.defaultTolerancePx, request.tolerancePx,
             request.rigidGroups, None, request.shapeStrictness, None, None, learned, request.animals,
+            scope=request.scope,
         )
         _SHAPE_CACHE.clear()
         _SHAPE_CACHE[key] = learned

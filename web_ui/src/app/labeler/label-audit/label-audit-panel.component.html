@@ -35,8 +35,70 @@
       <span class="badge badge-xs ml-1">{{ audit.shapeCount() }}</span>
     }
   </button>
+  <button
+    type="button"
+    role="tab"
+    class="tab"
+    data-testid="audit-tab-midline"
+    [class.tab-active]="audit.mode() === 'midline'"
+    [attr.aria-selected]="audit.mode() === 'midline'"
+    (click)="audit.setMode('midline')"
+  >
+    3. Midline
+    @if (showFindings()) {
+      <span class="badge badge-xs ml-1">{{ audit.midlineCount() }}</span>
+    }
+  </button>
+  <button
+    type="button"
+    role="tab"
+    class="tab"
+    data-testid="audit-tab-missing"
+    [class.tab-active]="audit.mode() === 'missing'"
+    [attr.aria-selected]="audit.mode() === 'missing'"
+    (click)="audit.setMode('missing')"
+  >
+    4. Missing
+    @if (showFindings()) {
+      <span class="badge badge-xs ml-1">{{ audit.missingCount() }}</span>
+    }
+  </button>
 </div>
-@if (audit.mode() === 'views') {
+@if (audit.mode() === 'missing') {
+  <div class="text-xs opacity-70 py-1">
+    Every frame where one keypoint has no label (queue: no prediction), to see
+    whether it is really hidden there. Useful when a model drops a keypoint too
+    often. In the review all keypoints are drawn and the missing one is
+    selected: click to place it, or go on if it is hidden.
+  </div>
+  <label class="flex items-center gap-1 text-xs py-1">
+    Keypoint
+    <select
+      class="select select-xs flex-1"
+      data-testid="audit-missing-keypoint"
+      [ngModel]="audit.missingKeypoint()"
+      (ngModelChange)="setMissingKeypoint($event)"
+    >
+      <option value="">choose…</option>
+      @for (name of keypointNames(); track name) {
+        <option [value]="name">{{ name }}</option>
+      }
+    </select>
+  </label>
+  <label class="flex items-center gap-1 text-xs py-1">
+    Missing in
+    <select
+      class="select select-xs flex-1"
+      data-testid="audit-missing-where"
+      [ngModel]="audit.missingWhere()"
+      (ngModelChange)="setMissingWhere($event)"
+    >
+      <option value="any">at least one view</option>
+      <option value="all">every view</option>
+      <option value="some">some views, not all</option>
+    </select>
+  </label>
+} @else if (audit.mode() === 'views') {
   <div class="text-xs opacity-70 py-1">
     Labels the camera calibration disagrees with: the views don't meet in 3D,
     or a left/right pair is swapped. Fix these first.
@@ -54,6 +116,49 @@
     />
     px between the views
   </label>
+} @else if (audit.mode() === 'midline') {
+  <div class="text-xs opacity-70 py-1">
+    A keypoint on the body midline (the back) should be at equal distance from a
+    left and a right keypoint (the shoulders). Off to one side, it rotates the
+    body axis. Checked in 3D, worst first. The body bends, so this is a guide.
+  </div>
+  @for (field of midlineFields; track field.key) {
+    <label class="flex items-center gap-1 text-xs py-0.5">
+      <span class="w-28 shrink-0">{{ field.label }}</span>
+      <select
+        class="select select-xs grow min-w-0"
+        [attr.aria-label]="field.label"
+        (change)="setMidlineKeypoint(field.key, $any($event.target).value)"
+      >
+        <option value="" [selected]="midline()[field.key] === ''">–</option>
+        @for (name of keypointNames(); track name) {
+          <option [value]="name" [selected]="midline()[field.key] === name">{{ name }}</option>
+        }
+      </select>
+    </label>
+  }
+  <label class="flex items-center gap-1 text-xs py-1">
+    <span
+      class="tooltip tooltip-right"
+      data-tip="Angle between the body axis (midpoint of left and right to the midline keypoint) and the midline."
+      >Allowed</span
+    >
+    <input
+      type="number"
+      min="0.5"
+      step="0.5"
+      class="input input-xs w-16"
+      aria-label="Midline tolerance in degrees"
+      [ngModel]="midline().toleranceDeg"
+      (ngModelChange)="onMidlineTolerance($event)"
+    />
+    ° off the midline
+  </label>
+  @if (!midlineSet()) {
+    <div class="text-xs text-warning py-1" data-testid="audit-midline-unset">
+      Choose three different keypoints; the midline is not checked until then.
+    </div>
+  }
 } @else {
   <div class="text-xs opacity-70 py-1">
     Keypoints of a rigid group (e.g. the head) keep their 3D distances. Give
@@ -151,6 +256,24 @@
     }
   </ul>
 </details>
+<label class="flex items-center gap-1 text-xs py-1">
+  Check
+  <select
+    class="select select-xs flex-1"
+    data-testid="audit-scope"
+    [ngModel]="audit.scope()"
+    (ngModelChange)="setScope($event)"
+  >
+    <option value="labeled">saved labels ({{ frames().length }})</option>
+    <option value="queue">frames still to label ({{ queueFrames().length }})</option>
+  </select>
+</label>
+@if (audit.scope() === 'queue') {
+  <div class="text-xs opacity-70 pb-1">
+    Checks the model predictions the frames were queued with. Saving a frame
+    in the review approves it as a label.
+  </div>
+}
 <div
   class="py-1"
   [class.tooltip]="!!runDisabledReason()"
@@ -167,7 +290,7 @@
     } @else {
       <span class="material-icons text-sm!">fact_check</span>
     }
-    Check labels
+    {{ audit.scope() === 'queue' ? 'Check queue' : 'Check labels' }}
   </button>
 </div>
 
@@ -178,7 +301,14 @@
 @if (showFindings()) {
   @if (audit.summary(); as s) {
     <div class="text-xs py-1" data-testid="audit-summary">
-      @if (audit.findings().length) {
+      @if (audit.mode() === 'missing') {
+        @if (audit.missingKeypoint()) {
+          {{ audit.missingKeypoint() }} is missing in {{ audit.findings().length }} of
+          {{ s.framesChecked }} frames.
+        } @else {
+          Choose a keypoint above.
+        }
+      } @else if (audit.findings().length) {
         {{ audit.findings().length }} likely
         {{ audit.findings().length === 1 ? 'mistake' : 'mistakes' }} in
         {{ s.framesChecked }} frames.
@@ -187,6 +317,22 @@
         ({{ s.pointsChecked }} points checked).
       }
     </div>
+    @if (audit.auditedScope() === 'queue' && audit.cleanFrameKeys().length) {
+      <div class="text-xs py-1">
+        {{ audit.cleanFrameKeys().length }} queue
+        {{ audit.cleanFrameKeys().length === 1 ? 'frame has' : 'frames have' }}
+        no finding in any of the three checks.
+      </div>
+      <button
+        type="button"
+        class="btn btn-xs btn-soft btn-success w-full my-1"
+        data-testid="audit-approve-clean"
+        (click)="approve.emit(audit.cleanFrameKeys())"
+      >
+        <span class="material-icons text-sm!">done_all</span>
+        Approve these {{ audit.cleanFrameKeys().length }} as labels
+      </button>
+    }
     @if (audit.mode() === 'shape' && s.shapeTemplates?.length) {
       <button
         type="button"
@@ -279,6 +425,17 @@
         animal name (compared among themselves).
       </div>
     }
+    @if (audit.mode() === 'midline') {
+      <div class="text-xs opacity-70 py-1" data-testid="audit-midline-summary">
+        {{ s.midlineChecked ?? 0 }} frames measured@if (s.midlineNoGuide) {, {{ s.midlineNoGuide }} without a
+          midline (left or right keypoint not in two views)}.
+      </div>
+      @for (problem of s.midlineProblems ?? []; track $index) {
+        <div class="text-xs text-warning py-1" data-testid="audit-midline-problem">
+          Midline: {{ problem }}
+        </div>
+      }
+    }
     @for (problem of s.shapeProblems ?? []; track $index) {
       <div class="text-xs text-warning py-1" data-testid="audit-shape-problem">
         Rigid group: {{ problem }}
@@ -337,9 +494,20 @@
                   [class.badge-warning]="f.kind === 'swap'"
                   [class.badge-info]="f.kind === 'multiview'"
                   [class.badge-accent]="f.kind === 'shape'"
+                  [class.badge-secondary]="f.kind === 'midline'"
                   >{{ kindLabel(f) }}</span
                 >
-                @if (f.kind === 'shape') {
+                @if (f.kind === 'missing') {
+                  <span class="truncate">{{ frameName(f) }}</span>
+                  <span class="ml-auto shrink-0 opacity-70"
+                    >{{ f.errorPx === f.tolerancePx ? 'every view' : f.view }}</span
+                  >
+                } @else if (f.kind === 'midline') {
+                  <span class="truncate">{{ frameName(f) }} · {{ f.keypoint }}</span>
+                  <span class="ml-auto shrink-0 opacity-70"
+                    >{{ f.errorPx | number: '1.0-0' }}°</span
+                  >
+                } @else if (f.kind === 'shape') {
                   <span class="truncate"
                     >{{ frameName(f) }} · {{ f.keypoint
                     }}{{ f.partner ? ' or ' + f.partner : '' }}</span

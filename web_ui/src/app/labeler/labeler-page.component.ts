@@ -309,6 +309,42 @@ export class LabelerPageComponent implements OnInit, OnChanges {
     }
   }
 
+  /**
+   * Saves queue frames as labels with the predictions they show (label audit, queue check:
+   * the frames without a finding). Asks first; stops at the first frame that fails to save.
+   */
+  protected async handleApproveQueueFrames(keys: string[]) {
+    const labelFile = this.loadedLabelFile();
+    const frames = (this.labelFileData() ?? []).filter(
+      (frame) => keys.includes(frame.key) && mvf(frame).isFromUnlabeledSet,
+    );
+    if (!labelFile || !frames.length) return;
+    const ok = window.confirm(
+      `Save ${frames.length} queue ${frames.length === 1 ? 'frame' : 'frames'} as labels, with the ` +
+        'predictions as they are? Keypoints without a prediction are saved as not visible. ' +
+        'The frames are not shown first; they can be edited afterwards like any label.',
+    );
+    if (!ok) return;
+    const saved: string[] = [];
+    try {
+      for (const frame of frames) {
+        await this.sessionService.saveMVFrame(labelFile, frame);
+        saved.push(frame.key);
+      }
+    } finally {
+      this.labelFileData.update(
+        (all) =>
+          all?.map((frame) => (saved.includes(frame.key) ? mvf(frame).toSavedMvf() : frame)) ??
+          null,
+      );
+      this.audit.dropClean(saved);
+      this.toastService.showToast({
+        content: `Approved ${saved.length} of ${frames.length} queue frames as labels`,
+        variant: saved.length === frames.length ? undefined : 'warning',
+      });
+    }
+  }
+
   protected handleCloseFrame() {
     this.router.navigate([], {
       queryParams: { labelFileKey: this.labelFileKey() },
